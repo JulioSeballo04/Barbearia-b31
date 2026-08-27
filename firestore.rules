@@ -1,0 +1,54 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // O cliente entra com Google; o barbeiro entra com sessão anônima +
+    // PIN checado no app (ver auth.js/booking.js). Como os dois têm
+    // request.auth preenchido, usamos o provedor de login pra diferenciar
+    // quem é quem dentro das regras.
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isClientSession() {
+      return isSignedIn() &&
+        request.auth.token.firebase.sign_in_provider == "google.com";
+    }
+
+    function isBarberSession() {
+      return isSignedIn() &&
+        request.auth.token.firebase.sign_in_provider == "anonymous";
+    }
+
+    // Cada cliente só lê/edita o próprio perfil. Barbeiro pode ler todos
+    // (precisa ver nome/telefone nos agendamentos).
+    match /clients/{uid} {
+      allow read: if isClientSession() && request.auth.uid == uid || isBarberSession();
+      allow write: if isClientSession() && request.auth.uid == uid;
+    }
+
+    // Configuração do barbeiro (inclui o PIN): qualquer cliente logado
+    // pode ler (precisa pra montar a tela de agendamento), só a sessão do
+    // barbeiro escreve. O PIN em si funciona como a trava real — quem não
+    // sabe o PIN não consegue usar a tela que chama essa escrita.
+    match /barberConfig/{doc} {
+      allow read: if isSignedIn();
+      allow write: if isBarberSession();
+    }
+
+    match /scheduleOverrides/{date} {
+      allow read: if isSignedIn();
+      allow write: if isBarberSession();
+    }
+
+    // Agendamentos: qualquer sessão logada pode ler (precisa ver horários
+    // ocupados). Cliente só cria/cancela o próprio; barbeiro pode
+    // cancelar e marcar como concluído qualquer um.
+    match /appointments/{apptId} {
+      allow read: if isSignedIn();
+      allow create: if isClientSession() && request.resource.data.clientUid == request.auth.uid;
+      allow update, delete: if (isClientSession() && resource.data.clientUid == request.auth.uid) ||
+        isBarberSession();
+    }
+  }
+}
