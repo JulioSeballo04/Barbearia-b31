@@ -617,7 +617,8 @@ var DEFAULT_CONFIG = {
   startHour: 9,
   endHour: 19,
   slotMinutes: 30,
-  pin: "1234"
+  pin: "1234",
+  whatsapp: ""
 };
 
 var state = {
@@ -625,6 +626,7 @@ var state = {
   config: null,
   appts: [],          // histórico completo, usado pelo painel do barbeiro
   clientDateAppts: [], // agendamentos só do dia selecionado, usado na tela do cliente
+  clientOwnAppts: [], // agendamentos futuros do próprio cliente logado, pra ele ver/cancelar
   loaded: false,
   pendingGoogleUser: null, // usuário Google logado que ainda precisa informar telefone
   clientSession: null, // {uid, name, phone, email}
@@ -687,6 +689,34 @@ function isValidPhone(value){
 
 function isValidPassword(value){
   return String(value || "").length >= 4;
+}
+
+// Monta um link wa.me (grátis, sem API paga) com mensagem pré-preenchida.
+// O campo salvo em barberConfig.whatsapp guarda só DDD+número (mesma
+// máscara do telefone do cliente), então sempre prefixamos o código do
+// Brasil (55) antes de montar o link.
+function waLink(phoneRaw, message){
+  var digits = onlyDigits(phoneRaw);
+  if(!digits) return null;
+  if(digits.length <= 11){ digits = "55" + digits; }
+  return "https://wa.me/" + digits + "?text=" + encodeURIComponent(message);
+}
+
+function buildBookingWaMessage(confirmed){
+  return "Olá! Quero confirmar meu agendamento na Barbearia B31:\n" +
+    "Serviço: " + confirmed.serviceName + "\n" +
+    "Data: " + confirmed.dateLabel + "\n" +
+    "Horário: " + confirmed.time + "\n" +
+    "Cliente: " + (state.clientSession ? state.clientSession.name : "");
+}
+
+function buildCancelWaMessage(appt){
+  var dateLabel = appt.date.split("-").reverse().join("/");
+  return "Olá! Preciso cancelar meu agendamento na Barbearia B31:\n" +
+    "Serviço: " + appt.serviceName + "\n" +
+    "Data: " + dateLabel + "\n" +
+    "Horário: " + appt.time + "\n" +
+    "Cliente: " + appt.name;
 }
 
 function attachPhoneMask(inputEl){
@@ -805,6 +835,21 @@ async function refreshClientDateAppts(dateKey){
     var list = [];
     snap.forEach(function(d){ list.push(Object.assign({id: d.id}, d.data())); });
     state.clientDateAppts = list;
+    return true;
+  }catch(e){ return false; }
+}
+
+// Busca só os agendamentos futuros do próprio cliente logado, usado pra ele
+// ver e poder cancelar o que já marcou.
+async function refreshClientOwnAppts(){
+  if(!state.clientSession) return false;
+  try{
+    var q = query(collection(db, "appointments"), where("uid", "==", state.clientSession.uid));
+    var snap = await getDocs(q);
+    var list = [];
+    snap.forEach(function(d){ list.push(Object.assign({id: d.id}, d.data())); });
+    list.sort(function(a,b){ return (a.date+a.time).localeCompare(b.date+b.time); });
+    state.clientOwnAppts = list;
     return true;
   }catch(e){ return false; }
 }
@@ -1010,6 +1055,7 @@ function renderClientAuth(el){
         state.clientSession = {uid: user.uid, name: p.name || user.displayName, phone: p.phone, email: p.email || user.email};
         state.screen = "clientApp";
         render();
+        refreshClientOwnAppts().then(render);
       } else {
         state.pendingGoogleUser = user;
         state.screen = "clientPhone";
@@ -1069,6 +1115,7 @@ function renderClientPhoneStep(el){
       state.pendingGoogleUser = null;
       state.screen = "clientApp";
       render();
+      refreshClientOwnAppts().then(render);
     }catch(e){
       btn.disabled = false;
       btn.textContent = "Concluir cadastro";
@@ -1080,17 +1127,75 @@ function renderClientPhoneStep(el){
 
 // ---------- CLIENT APP (booking) ----------
 
+function renderClientOwnApptsHtml(){
+  var todayKey = dateKey(new Date());
+  var upcoming = state.clientOwnAppts.filter(function(a){
+    return !a.done && a.date >= todayKey;
+  });
+  if(!upcoming.length) return "";
+  var itemsHtml = upcoming.map(function(a){
+    var dateLabel = a.date.split("-").reverse().join("/");
+    return '<div class="appt">'+
+      '<div>'+
+        '<div class="who">'+escapeHtml(a.serviceName)+'</div>'+
+        '<div class="when">'+dateLabel+' às '+a.time+'</div>'+
+      '</div>'+
+      '<div class="appt-actions">'+
+        '<button class="danger" data-clientcancel="'+a.id+'">Cancelar</button>'+
+      '</div>'+
+    '</div>';
+  }).join("");
+  return '<div class="card">'+
+    '<h2>Seus agendamentos</h2>'+
+    '<p class="sub">Horários que você já marcou.</p>'+
+    itemsHtml+
+  '</div>';
+}
+
+function wireClientOwnApptsHandlers(el){
+  el.querySelectorAll("[data-clientcancel]").forEach(function(btn){
+    btn.onclick = async function(){
+      var id = btn.getAttribute("data-clientcancel");
+      var target = state.clientOwnAppts.find(function(a){ return a.id === id; });
+      if(!target) return;
+      var ok = window.confirm("Cancelar esse agendamento?");
+      if(!ok) return;
+      btn.disabled = true;
+      btn.textContent = "Cancelando...";
+      var okSave = await cancelApptDoc(id);
+      if(!okSave){
+        btn.disabled = false;
+        btn.textContent = "Cancelar";
+        showToast(saveErrorMessage(), true);
+        return;
+      }
+      state.clientOwnAppts = state.clientOwnAppts.filter(function(a){ return a.id !== id; });
+      if(state.config.whatsapp){
+        var link = waLink(state.config.whatsapp, buildCancelWaMessage(target));
+        if(link) window.open(link, "_blank", "noopener");
+      }
+      render();
+    };
+  });
+}
+
 function renderClientApp(el){
   if(state.clientConfirmed){
     var a = state.clientConfirmed;
+    var waConfirmLink = state.config.whatsapp ? waLink(state.config.whatsapp, buildBookingWaMessage(a)) : null;
+    var waConfirmHtml = waConfirmLink
+      ? '<a class="ghost" href="'+waConfirmLink+'" target="_blank" rel="noopener" style="display:inline-block; text-decoration:none; margin-top:12px;">Confirmar via WhatsApp</a>'
+      : "";
     el.innerHTML =
       '<div class="card success-box">'+
         '<div class="badge">&#10003;</div>'+
         '<h2 class="display">Horário confirmado</h2>'+
         '<p class="sub">'+escapeHtml(a.serviceName)+' — '+a.dateLabel+' às '+a.time+'</p>'+
-        '<button class="ghost" id="newBooking">Marcar outro horário</button>'+
+        waConfirmHtml+
+        '<div><button class="ghost" id="newBooking" style="margin-top:16px;">Marcar outro horário</button></div>'+
         '<div><span class="backlink" id="logoutClient" style="margin-top:16px;">Sair da conta</span></div>'+
-      '</div>';
+      '</div>'+
+      renderClientOwnApptsHtml();
     document.getElementById("newBooking").onclick = function(){
       state.clientConfirmed = null;
       state.clientSelectedService = null;
@@ -1099,6 +1204,7 @@ function renderClientApp(el){
       render();
     };
     document.getElementById("logoutClient").onclick = doClientLogout;
+    wireClientOwnApptsHandlers(el);
     return;
   }
 
@@ -1148,6 +1254,7 @@ function renderClientApp(el){
       '<span class="who">Logado como '+escapeHtml(state.clientSession.name)+'</span>'+
       '<span class="backlink" id="logoutClient">Sair</span>'+
     '</div>'+
+    renderClientOwnApptsHtml()+
     '<div class="card">'+
       '<h2>1. Escolha o serviço</h2>'+
       '<div class="services">'+svcHtml+'</div>'+
@@ -1164,6 +1271,7 @@ function renderClientApp(el){
     '</div>';
 
   document.getElementById("logoutClient").onclick = doClientLogout;
+  wireClientOwnApptsHandlers(el);
 
   el.querySelectorAll(".svc").forEach(function(node){
     makeActivatable(node, function(){
@@ -1235,8 +1343,9 @@ function renderClientApp(el){
     // A checagem acima é só pra UX (evitar mostrar "confirmando" num
     // horário já óbvio como ocupado). A trava real contra dois clientes
     // confirmando o mesmo horário ao mesmo tempo é a transação abaixo.
+    var newApptId;
     try{
-      await bookAppointmentTx(appt);
+      newApptId = await bookAppointmentTx(appt);
     }catch(e){
       if(e && e.message === "SLOT_TAKEN"){
         errBox.textContent = "Esse horário acabou de ser reservado por outra pessoa. Escolha outro.";
@@ -1258,6 +1367,7 @@ function renderClientApp(el){
       dateLabel: DOW[d.getDay()] + " " + d.getDate() + "/" + pad(d.getMonth()+1),
       time: appt.time
     };
+    state.clientOwnAppts.push(Object.assign({id: newApptId}, appt));
     render();
   };
 }
@@ -1271,6 +1381,7 @@ async function doClientLogout(){
   state.clientSelectedDate = null;
   state.clientSelectedSlot = null;
   state.clientDateAppts = [];
+  state.clientOwnAppts = [];
   state.screen = "landing";
   render();
 }
@@ -1417,6 +1528,8 @@ function renderBarberApp(el){
       '<input type="text" id="slotMin" value="'+state.config.slotMinutes+'">'+
       '<label for="newPin">PIN de acesso</label>'+
       '<input type="password" id="newPin" value="'+escapeHtml(state.config.pin)+'">'+
+      '<label for="barberWhatsapp">WhatsApp para receber confirmações e cancelamentos</label>'+
+      '<input type="tel" id="barberWhatsapp" placeholder="(11) 91234-5678" value="'+escapeHtml(state.config.whatsapp || "")+'">'+
       '<button class="primary" id="saveCfgBtn">Salvar configurações</button>'+
       '<div id="cfgSaved" class="hint" role="status" aria-live="polite" style="display:none;">Configurações salvas.</div>'+
     '</div>'+
@@ -1425,6 +1538,8 @@ function renderBarberApp(el){
       '<div id="servicesList"></div>'+
       '<button class="ghost" id="addSvcBtn" style="margin-top:10px;">+ Adicionar serviço</button>'+
     '</div>';
+
+  attachPhoneMask(document.getElementById("barberWhatsapp"));
 
   var logoutHandler = async function(){
     try{ await signOut(auth); }catch(e){}
@@ -1514,6 +1629,7 @@ function renderBarberApp(el){
     var eh = parseInt(document.getElementById("endHour").value, 10);
     var sm = parseInt(document.getElementById("slotMin").value, 10);
     var pin = document.getElementById("newPin").value.trim().slice(0, 12);
+    var whatsapp = document.getElementById("barberWhatsapp").value.trim();
     var saved = document.getElementById("cfgSaved");
     var invalid =
       isNaN(sh) || isNaN(eh) || isNaN(sm) ||
@@ -1529,17 +1645,27 @@ function renderBarberApp(el){
       saved.style.display = "block";
       return;
     }
-    var previous = {startHour: state.config.startHour, endHour: state.config.endHour, slotMinutes: state.config.slotMinutes, pin: state.config.pin};
+    // WhatsApp é opcional (sem ele, o botão de confirmação/cancelamento via
+    // WhatsApp simplesmente não aparece pro cliente), mas se preenchido
+    // precisa ser um número válido com DDD.
+    if(whatsapp && !isValidPhone(whatsapp)){
+      saved.textContent = "Informe um WhatsApp válido, com DDD, ou deixe o campo em branco.";
+      saved.style.display = "block";
+      return;
+    }
+    var previous = {startHour: state.config.startHour, endHour: state.config.endHour, slotMinutes: state.config.slotMinutes, pin: state.config.pin, whatsapp: state.config.whatsapp};
     state.config.startHour = sh;
     state.config.endHour = eh;
     state.config.slotMinutes = sm;
     state.config.pin = pin;
+    state.config.whatsapp = whatsapp;
     var ok = await saveConfig();
     if(!ok){
       state.config.startHour = previous.startHour;
       state.config.endHour = previous.endHour;
       state.config.slotMinutes = previous.slotMinutes;
       state.config.pin = previous.pin;
+      state.config.whatsapp = previous.whatsapp;
       saved.textContent = saveErrorMessage();
       saved.style.display = "block";
       return;
@@ -1639,6 +1765,7 @@ async function init(){
           state.clientSession = {uid: user.uid, name: p.name || user.displayName, phone: p.phone, email: p.email || user.email};
           state.screen = "clientApp";
           render();
+          refreshClientOwnAppts().then(render);
         }
       }catch(e){}
     }
