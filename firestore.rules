@@ -46,8 +46,8 @@ service cloud.firestore {
     // cancelar e marcar como concluído qualquer um.
     match /appointments/{apptId} {
       allow read: if isSignedIn();
-      allow create: if isClientSession() && request.resource.data.clientUid == request.auth.uid;
-      allow update, delete: if (isClientSession() && resource.data.clientUid == request.auth.uid) ||
+      allow create: if isClientSession() && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if (isClientSession() && resource.data.uid == request.auth.uid) ||
         isBarberSession();
     }
   }
