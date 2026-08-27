@@ -1184,7 +1184,7 @@ function renderClientApp(el){
     var a = state.clientConfirmed;
     var waConfirmLink = state.config.whatsapp ? waLink(state.config.whatsapp, buildBookingWaMessage(a)) : null;
     var waConfirmHtml = waConfirmLink
-      ? '<a class="ghost" href="'+waConfirmLink+'" target="_blank" rel="noopener" style="display:inline-block; text-decoration:none; margin-top:12px;">Confirmar via WhatsApp</a>'
+      ? '<a class="ghost" href="'+waConfirmLink+'" target="_blank" rel="noopener" style="display:inline-block; text-decoration:none; margin-top:12px;">Não abriu? Confirmar via WhatsApp</a>'
       : "";
     el.innerHTML =
       '<div class="card success-box">'+
@@ -1368,6 +1368,15 @@ function renderClientApp(el){
       time: appt.time
     };
     state.clientOwnAppts.push(Object.assign({id: newApptId}, appt));
+    // Abre o WhatsApp automaticamente com a confirmação já preenchida. Como
+    // isso ainda acontece dentro do mesmo clique do usuário (só depois de
+    // um await), a maioria dos navegadores permite o popup sem bloquear;
+    // o botão na tela de sucesso continua ali como alternativa caso algum
+    // navegador bloqueie mesmo assim.
+    if(state.config.whatsapp){
+      var waLinkUrl = waLink(state.config.whatsapp, buildBookingWaMessage(state.clientConfirmed));
+      if(waLinkUrl) window.open(waLinkUrl, "_blank", "noopener");
+    }
     render();
   };
 }
