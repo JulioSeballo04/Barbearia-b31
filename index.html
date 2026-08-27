@@ -630,6 +630,7 @@ var state = {
   loaded: false,
   pendingGoogleUser: null, // usuário Google logado que ainda precisa informar telefone
   clientSession: null, // {uid, name, phone, email}
+  clientEditingName: false,
   clientSelectedService: null,
   clientSelectedDate: null,
   clientSelectedSlot: null,
@@ -1127,6 +1128,74 @@ function renderClientPhoneStep(el){
 
 // ---------- CLIENT APP (booking) ----------
 
+function renderSessionBarHtml(){
+  if(state.clientEditingName){
+    return '<div class="session-bar">'+
+      '<span class="who">'+
+        '<input type="text" id="clientNameInput" value="'+escapeHtml(state.clientSession.name)+'" '+
+          'style="font-size:13px; padding:4px 8px; border-radius:4px; border:1px solid var(--line); width:160px;" maxlength="60">'+
+      '</span>'+
+      '<span>'+
+        '<span class="backlink" id="saveNameBtn" style="margin-right:12px;">Salvar</span>'+
+        '<span class="backlink" id="cancelNameBtn">Cancelar</span>'+
+      '</span>'+
+    '</div>'+
+    '<div id="nameError" class="error" role="alert" aria-live="polite" style="display:none; margin-bottom:10px;"></div>';
+  }
+  return '<div class="session-bar">'+
+    '<span class="who">Logado como '+escapeHtml(state.clientSession.name)+' · <span class="backlink" id="editNameBtn">editar nome</span></span>'+
+    '<span class="backlink" id="logoutClient">Sair</span>'+
+  '</div>';
+}
+
+function wireSessionBarHandlers(el){
+  var logoutBtn = document.getElementById("logoutClient");
+  if(logoutBtn) logoutBtn.onclick = doClientLogout;
+
+  var editBtn = document.getElementById("editNameBtn");
+  if(editBtn){
+    editBtn.onclick = function(){
+      state.clientEditingName = true;
+      render();
+    };
+  }
+
+  var cancelBtn = document.getElementById("cancelNameBtn");
+  if(cancelBtn){
+    cancelBtn.onclick = function(){
+      state.clientEditingName = false;
+      render();
+    };
+  }
+
+  var saveBtn = document.getElementById("saveNameBtn");
+  if(saveBtn){
+    saveBtn.onclick = async function(){
+      var input = document.getElementById("clientNameInput");
+      var errBox = document.getElementById("nameError");
+      var val = input.value.trim().slice(0, 60);
+      if(!val){
+        errBox.textContent = "O nome não pode ficar em branco.";
+        errBox.style.display = "block";
+        return;
+      }
+      saveBtn.textContent = "Salvando...";
+      var previous = state.clientSession.name;
+      state.clientSession.name = val;
+      try{
+        await setDoc(doc(db, "clients", state.clientSession.uid), { name: val }, { merge: true });
+        state.clientEditingName = false;
+        render();
+      }catch(e){
+        state.clientSession.name = previous;
+        saveBtn.textContent = "Salvar";
+        errBox.textContent = saveErrorMessage();
+        errBox.style.display = "block";
+      }
+    };
+  }
+}
+
 function renderClientOwnApptsHtml(){
   var todayKey = dateKey(new Date());
   var upcoming = state.clientOwnAppts.filter(function(a){
@@ -1250,10 +1319,7 @@ function renderClientApp(el){
   }
 
   el.innerHTML =
-    '<div class="session-bar">'+
-      '<span class="who">Logado como '+escapeHtml(state.clientSession.name)+'</span>'+
-      '<span class="backlink" id="logoutClient">Sair</span>'+
-    '</div>'+
+    renderSessionBarHtml()+
     renderClientOwnApptsHtml()+
     '<div class="card">'+
       '<h2>1. Escolha o serviço</h2>'+
@@ -1270,7 +1336,7 @@ function renderClientApp(el){
       '<button class="primary" id="confirmBtn">Confirmar agendamento</button>'+
     '</div>';
 
-  document.getElementById("logoutClient").onclick = doClientLogout;
+  wireSessionBarHandlers(el);
   wireClientOwnApptsHandlers(el);
 
   el.querySelectorAll(".svc").forEach(function(node){
@@ -1384,6 +1450,7 @@ function renderClientApp(el){
 async function doClientLogout(){
   try{ await signOut(auth); }catch(e){}
   state.clientSession = null;
+  state.clientEditingName = false;
   state.pendingGoogleUser = null;
   state.clientConfirmed = null;
   state.clientSelectedService = null;
