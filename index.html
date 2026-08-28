@@ -120,6 +120,21 @@
     background:var(--white);
     color:var(--black);
   }
+  textarea{
+    width:100%;
+    padding:10px 12px;
+    border-radius:6px;
+    border:1px solid var(--line);
+    font-size:14px;
+    font-family:inherit;
+    background:var(--white);
+    color:var(--black);
+    resize:vertical;
+  }
+  textarea:focus{
+    outline:2px solid var(--black);
+    outline-offset:1px;
+  }
   input:focus, select:focus{
     outline:2px solid var(--black);
     outline-offset:1px;
@@ -784,6 +799,57 @@ function buildCancelWaMessage(appt){
     "Cliente: " + appt.name;
 }
 
+function buildBugReportMailto(context, description){
+  var subject = "B31 — Problema relatado (" + context + ")";
+  var lines = [
+    "Descrição do problema:",
+    description || "(não descrito)",
+    "",
+    "--- Contexto (não apague, ajuda a investigar) ---",
+    "Página: " + context,
+    "Data/hora: " + nowSP().toLocaleString("pt-BR"),
+  ];
+  if(context === "cliente" && state.clientSession){
+    lines.push("Cliente: " + state.clientSession.name + " (" + state.clientSession.phone + ")");
+  }
+  var body = lines.join("\n");
+  return "mailto:projetos.tecnologia2026@gmail.com?subject=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
+}
+
+// Card reaproveitado tanto na tela do cliente quanto no painel do
+// barbeiro. Usa mailto: de propósito (sem servidor, sem custo, sem
+// depender de nenhuma API externa) — clicar abre o app de e-mail do
+// próprio usuário já com o destinatário e a descrição preenchidos.
+function bugReportCardHtml(idPrefix){
+  return '<div class="card">'+
+    '<h2>Encontrou um problema?</h2>'+
+    '<p class="sub">Descreva o que aconteceu. Isso vai abrir seu aplicativo de e-mail com a mensagem já preenchida.</p>'+
+    '<label for="'+idPrefix+'BugDesc">O que aconteceu?</label>'+
+    '<textarea id="'+idPrefix+'BugDesc" rows="3" placeholder="Ex: ao confirmar o agendamento, apareceu uma mensagem de erro e a tela travou..."></textarea>'+
+    '<button class="ghost" id="'+idPrefix+'ReportBtn" style="margin-top:12px;">Reportar por e-mail</button>'+
+  '</div>';
+}
+
+function wireBugReportHandlers(idPrefix, context){
+  var btn = document.getElementById(idPrefix+"ReportBtn");
+  if(!btn) return;
+  btn.onclick = function(){
+    var desc = document.getElementById(idPrefix+"BugDesc").value.trim();
+    window.location.href = buildBugReportMailto(context, desc);
+  };
+}
+
+// Mensagem enviada pro CLIENTE quando é o BARBEIRO quem cancela pelo
+// painel dele (sentido contrário da função acima).
+function buildBarberCancelWaMessage(appt){
+  var dateLabel = appt.date.split("-").reverse().join("/");
+  return "Olá " + appt.name + "! Infelizmente precisei cancelar seu agendamento na Barbearia B31:\n" +
+    "Serviço: " + appt.serviceName + "\n" +
+    "Data: " + dateLabel + "\n" +
+    "Horário: " + appt.time + "\n" +
+    "Vamos combinar um novo horário quando for melhor pra você. Desculpa o transtorno!";
+}
+
 function attachPhoneMask(inputEl){
   if(!inputEl) return;
   inputEl.setAttribute("inputmode", "tel");
@@ -965,15 +1031,23 @@ function apptsForDate(dateStr){
 // Checks whether a candidate [startTime, startTime+duration) overlaps any
 // existing appointment that day, so a longer service (ex: Corte + Barba)
 // correctly blocks out shorter slots that would otherwise fit inside it.
+//
+// O "intervalo" configurado pelo barbeiro (state.config.slotMinutes) tem
+// DOIS papéis: além de ser o passo da grade de horários (11:00, 11:15,
+// 11:30...), ele também funciona como um tempo de buffer/limpeza que é
+// somado ao fim de CADA agendamento existente. Por isso, um corte de 30min
+// às 11:00 com intervalo de 15min ocupa até as 11:45 (não só até as
+// 11:30) — o próximo horário realmente livre é 11:45.
 function isSlotAvailable(dateStr, startTime, duration){
   var startMin = timeToMinutes(startTime);
   var endMin = startMin + duration;
+  var buffer = state.config.slotMinutes;
   var dayAppts = apptsForDate(dateStr);
   for(var i = 0; i < dayAppts.length; i++){
     var a = dayAppts[i];
     var aStart = timeToMinutes(a.time);
     var aDur = a.minutes || state.config.slotMinutes;
-    var aEnd = aStart + aDur;
+    var aEnd = aStart + aDur + buffer;
     if(startMin < aEnd && endMin > aStart){ return false; }
   }
   return true;
@@ -1408,10 +1482,12 @@ function renderClientApp(el){
     '<div class="card">'+
       '<div id="cliError" class="error" role="alert" aria-live="polite" style="display:none;"></div>'+
       '<button class="primary" id="confirmBtn">Confirmar agendamento</button>'+
-    '</div>';
+    '</div>'+
+    bugReportCardHtml("client");
 
   wireSessionBarHandlers(el);
   wireClientOwnApptsHandlers(el);
+  wireBugReportHandlers("client", "cliente");
 
   el.querySelectorAll(".svc").forEach(function(node){
     makeActivatable(node, function(){
@@ -1720,9 +1796,11 @@ function renderBarberApp(el){
       '<h2>Serviços</h2>'+
       '<div id="servicesList"></div>'+
       '<button class="ghost" id="addSvcBtn" style="margin-top:10px;">+ Adicionar serviço</button>'+
-    '</div>';
+    '</div>'+
+    bugReportCardHtml("barber");
 
   attachPhoneMask(document.getElementById("barberWhatsapp"));
+  wireBugReportHandlers("barber", "barbeiro");
 
   var logoutHandler = async function(){
     try{ await signOut(auth); }catch(e){}
@@ -1749,17 +1827,28 @@ function renderBarberApp(el){
   el.querySelectorAll("[data-cancel]").forEach(function(btn){
     btn.onclick = async function(){
       var id = btn.getAttribute("data-cancel");
+      var target = state.appts.find(function(a){ return a.id === id; });
+      if(!target) return;
       var ok = window.confirm("Cancelar esse agendamento?");
       if(!ok) return;
       var previous = state.appts;
+      // Mesmo truque do fluxo do cliente: abre a aba em branco JÁ AQUI,
+      // ainda como resposta direta ao clique — celulares (principalmente
+      // Safari/iOS) bloqueiam window.open() feito depois de um await.
+      var waTab = target.phone ? window.open("", "_blank") : null;
       state.appts = state.appts.filter(function(a){ return a.id !== id; });
       render();
       var okSave = await cancelApptDoc(id);
       if(!okSave){
+        if(waTab) waTab.close();
         state.appts = previous;
         showToast(saveErrorMessage(), true);
         render();
         return;
+      }
+      if(waTab){
+        var link = waLink(target.phone, buildBarberCancelWaMessage(target));
+        if(link){ waTab.location = link; } else { waTab.close(); }
       }
     };
   });
