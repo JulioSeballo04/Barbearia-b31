@@ -702,6 +702,50 @@
   }
   .cal-legend span{ display:flex; align-items:center; gap:5px; }
   .cal-legend .dot{ width:7px; height:7px; border-radius:50%; display:inline-block; }
+
+  /* Calendário do cliente: mesma base do calendário do barbeiro (.cal-*),
+     com um pouco mais de acabamento visual e um container que se comporta
+     bem tanto num card estreito de celular quanto num card largo de
+     desktop (sem esticar os dias até ficarem enormes). */
+  .cal-wrap{
+    max-width:360px;
+    margin:10px auto 0;
+  }
+  .cal-day{
+    transition:border-color .15s ease, background-color .15s ease, transform .1s ease;
+  }
+  .cal-day.is-available{
+    border-color:var(--line);
+    box-shadow:0 1px 2px rgba(10,10,10,0.04);
+  }
+  .cal-day.is-available:hover{
+    border-color:var(--gold-dark);
+    background:var(--gold-soft);
+  }
+  .cal-day.is-available:active{ transform:scale(0.96); }
+  .cal-day.is-selected.is-available:hover{
+    background:var(--dark);
+    border-color:var(--gold);
+  }
+  .cal-day.is-past,
+  .cal-day.is-off,
+  .cal-day.is-closed,
+  .cal-day.is-locked{
+    cursor:default;
+  }
+  .cal-nav button:disabled{
+    opacity:0.35;
+    cursor:not-allowed;
+  }
+  .cal-nav button:not(:disabled):hover{
+    border-color:var(--gold-dark);
+    background:var(--gold-soft);
+  }
+  @media (min-width:640px){
+    .cal-wrap{ max-width:400px; }
+    .cal-day{ font-size:13px; }
+    .cal-day .cal-num{ font-size:14px; }
+  }
   .day-editor{
     margin-top:16px;
     padding-top:14px;
@@ -839,6 +883,7 @@ var state = {
   clientEditingName: false,
   clientSelectedService: null,
   clientSelectedDate: null,
+  clientCalendarMonth: null, // primeiro dia do mês mostrado no calendário do cliente
   clientSelectedSlot: null,
   clientConfirmed: null,
   barberLoggedIn: false,
@@ -882,6 +927,13 @@ function renderAuthLogo(dark){
 
 function pad(n){ return n < 10 ? "0"+n : ""+n; }
 function dateKey(d){ return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate()); }
+// Caminho inverso de dateKey: transforma "AAAA-MM-DD" de volta num Date
+// local, usado quando o dia escolhido no calendário do cliente não está
+// necessariamente numa lista de dias já montada em memória.
+function dateFromKey(k){
+  var p = k.split("-");
+  return new Date(parseInt(p[0],10), parseInt(p[1],10)-1, parseInt(p[2],10));
+}
 
 // A barbearia funciona sempre no horário de Brasília (America/Sao_Paulo),
 // não importa de onde o cliente esteja acessando. Sem isso, os cálculos de
@@ -1057,6 +1109,7 @@ async function loadData(){
   await ensureOverridesLoaded(thisMonth);
   await ensureOverridesLoaded(nextMonth);
   state.barberCalendarMonth = firstDayOfMonth(thisMonth);
+  state.clientCalendarMonth = firstDayOfMonth(thisMonth);
   state.loaded = true;
 }
 
@@ -1700,6 +1753,103 @@ function wireClientOwnApptsHandlers(el){
   });
 }
 
+// ---------- CALENDÁRIO DO CLIENTE (visão do mês, mesmo estilo do calendário do barbeiro) ----------
+
+function renderClientCalendarHtml(){
+  var monthDate = state.clientCalendarMonth || firstDayOfMonth(nowSP());
+  var today = nowSP();
+  var todayKey = dateKey(today);
+  var isCurrentMonth = monthKeyStr(monthDate) === monthKeyStr(today);
+  var first = firstDayOfMonth(monthDate);
+  var last = lastDayOfMonth(monthDate);
+  var startOffset = first.getDay();
+  var daysInMonth = last.getDate();
+  var unlocked = isMonthUnlocked(monthDate);
+
+  var cells = [];
+  for(var i = 0; i < startOffset; i++){ cells.push('<div class="cal-day cal-empty"></div>'); }
+  for(var day = 1; day <= daysInMonth; day++){
+    var d = new Date(monthDate.getFullYear(), monthDate.getMonth(), day);
+    var k = dateKey(d);
+    var override = state.scheduleOverrides[k];
+    var isPast = k < todayKey;
+    var isToday = k === todayKey;
+    var isDefaultWorkDay = state.config.workDays.indexOf(d.getDay()) !== -1;
+    var hasCustomPeriods = override && Array.isArray(override.periods) && override.periods.length;
+    var isClosed = override && override.closed;
+    var isOff = !isClosed && !isDefaultWorkDay && !hasCustomPeriods;
+    var isLocked = !unlocked && !isPast;
+    var isSelected = k === state.clientSelectedDate;
+    var isAvailable = !isPast && !isLocked && !isClosed && !isOff;
+
+    var classes = ["cal-day"];
+    if(isToday) classes.push("is-today");
+    if(isPast) classes.push("is-past");
+    if(isClosed) classes.push("is-closed");
+    else if(isOff) classes.push("is-off");
+    if(isLocked) classes.push("is-locked");
+    if(isAvailable) classes.push("is-available");
+    if(isSelected) classes.push("is-selected");
+
+    var label = DOW[d.getDay()]+' dia '+day+(isAvailable ? '' : ', indisponível');
+    cells.push('<div class="'+classes.join(" ")+'" '+
+      (isAvailable ? 'data-calday="'+k+'" role="button" tabindex="0" aria-pressed="'+isSelected+'"' : 'aria-disabled="true"')+
+      ' aria-label="'+label+'">'+
+      '<span class="cal-num">'+day+'</span>'+
+      (isToday ? '<span class="cal-dot"></span>' : '')+
+    '</div>');
+  }
+
+  var lockedNoteHtml = !unlocked
+    ? '<p class="sub" style="margin-top:10px;">A agenda de '+MONTH_NAMES[monthDate.getMonth()]+' ainda não foi liberada para agendamento.</p>'
+    : "";
+
+  return '<div class="cal-wrap">'+
+    '<div class="cal-head">'+
+      '<div class="cal-nav"><button type="button" data-clicalprev aria-label="Mês anterior"'+(isCurrentMonth ? ' disabled' : '')+'>&larr;</button></div>'+
+      '<div class="cal-title">'+MONTH_NAMES[monthDate.getMonth()]+' de '+monthDate.getFullYear()+'</div>'+
+      '<div class="cal-nav"><button type="button" data-clicalnext aria-label="Próximo mês">&rarr;</button></div>'+
+    '</div>'+
+    '<div class="cal-dow">'+DOW.map(function(n){ return '<span>'+n+'</span>'; }).join("")+'</div>'+
+    '<div class="cal-grid">'+cells.join("")+'</div>'+
+    '<div class="cal-legend">'+
+      '<span><span class="dot" style="background:var(--white); border:1px solid var(--line);"></span> Disponível</span>'+
+      '<span><span class="dot" style="background:var(--gray-300);"></span> Indisponível</span>'+
+      '<span><span class="dot" style="background:var(--black);"></span> Selecionado</span>'+
+    '</div>'+
+    lockedNoteHtml+
+  '</div>';
+}
+
+function wireClientCalendarHandlers(el){
+  var prevBtn = el.querySelector("[data-clicalprev]");
+  if(prevBtn && !prevBtn.disabled){
+    prevBtn.onclick = function(){
+      var m = state.clientCalendarMonth;
+      state.clientCalendarMonth = new Date(m.getFullYear(), m.getMonth()-1, 1);
+      render();
+      ensureOverridesLoaded(state.clientCalendarMonth).then(render);
+    };
+  }
+  var nextBtn = el.querySelector("[data-clicalnext]");
+  if(nextBtn){
+    nextBtn.onclick = function(){
+      var m = state.clientCalendarMonth;
+      state.clientCalendarMonth = new Date(m.getFullYear(), m.getMonth()+1, 1);
+      render();
+      ensureOverridesLoaded(state.clientCalendarMonth).then(render);
+    };
+  }
+  el.querySelectorAll("[data-calday]").forEach(function(cell){
+    makeActivatable(cell, async function(){
+      state.clientSelectedDate = cell.getAttribute("data-calday");
+      state.clientSelectedSlot = null;
+      await refreshClientDateAppts(state.clientSelectedDate);
+      render();
+    });
+  });
+}
+
 function renderClientApp(el){
   if(state.clientConfirmed){
     var a = state.clientConfirmed;
@@ -1730,7 +1880,6 @@ function renderClientApp(el){
   }
 
   var services = state.config.services;
-  var days = nextDays(10);
 
   var selectedSvc = services.find(function(s){ return s.id === state.clientSelectedService; });
 
@@ -1742,21 +1891,12 @@ function renderClientApp(el){
     '</div>';
   }).join("");
 
-  var daysHtml = days.map(function(d){
-    var key = dateKey(d);
-    var sel = state.clientSelectedDate === key;
-    return '<div class="day'+(sel?' selected':'')+'" data-date="'+key+'" aria-pressed="'+sel+'" aria-label="'+DOW[d.getDay()]+' dia '+d.getDate()+'">'+
-      '<div class="dow">'+DOW[d.getDay()]+'</div>'+
-      '<div class="num">'+d.getDate()+'</div>'+
-    '</div>';
-  }).join("");
-
   var slotsHtml = '<p class="empty">Escolha um serviço para ver os horários</p>';
   if(selectedSvc && !state.clientSelectedDate){
     slotsHtml = '<p class="empty">Escolha um dia para ver os horários</p>';
   }
   if(selectedSvc && state.clientSelectedDate){
-    var selDate = days.find(function(d){ return dateKey(d) === state.clientSelectedDate; });
+    var selDate = dateFromKey(state.clientSelectedDate);
     var slots = selDate ? slotsForDate(selDate, selectedSvc.minutes) : [];
     if(slots.length === 0){
       slotsHtml = '<p class="empty">Sem horários livres nesse dia pra esse serviço ('+selectedSvc.minutes+' min)</p>';
@@ -1779,7 +1919,7 @@ function renderClientApp(el){
     '</div>'+
     '<div class="card">'+
       '<h2>2. Escolha o dia</h2>'+
-      '<div class="days">'+daysHtml+'</div>'+
+      renderClientCalendarHtml()+
       '<h2 style="margin-top:18px;">3. Escolha o horário</h2>'+
       slotsHtml+
     '</div>'+
@@ -1792,20 +1932,13 @@ function renderClientApp(el){
   wireSessionBarHandlers(el);
   wireClientOwnApptsHandlers(el);
   wireBugReportHandlers("client", "cliente");
+  wireClientCalendarHandlers(el);
 
   el.querySelectorAll(".svc").forEach(function(node){
     makeActivatable(node, function(){
       state.clientSelectedService = node.getAttribute("data-svc");
       state.clientSelectedDate = null;
       state.clientSelectedSlot = null;
-      render();
-    });
-  });
-  el.querySelectorAll(".day").forEach(function(node){
-    makeActivatable(node, async function(){
-      state.clientSelectedDate = node.getAttribute("data-date");
-      state.clientSelectedSlot = null;
-      await refreshClientDateAppts(state.clientSelectedDate);
       render();
     });
   });
@@ -1887,8 +2020,7 @@ function renderClientApp(el){
       return;
     }
 
-    var days2 = nextDays(10);
-    var d = days2.find(function(dd){ return dateKey(dd) === appt.date; });
+    var d = dateFromKey(appt.date);
     state.clientConfirmed = {
       serviceName: svc.name,
       dateLabel: DOW[d.getDay()] + " " + d.getDate() + "/" + pad(d.getMonth()+1),
@@ -1912,6 +2044,7 @@ async function doClientLogout(){
   state.clientSelectedService = null;
   state.clientSelectedDate = null;
   state.clientSelectedSlot = null;
+  state.clientCalendarMonth = firstDayOfMonth(nowSP());
   state.clientDateAppts = [];
   state.clientOwnAppts = [];
   state.screen = "landing";
