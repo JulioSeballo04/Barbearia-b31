@@ -27,12 +27,25 @@ service cloud.firestore {
       allow write: if isClientSession() && request.auth.uid == uid;
     }
 
-    // Configuração do barbeiro (inclui o PIN): qualquer cliente logado
-    // pode ler (precisa pra montar a tela de agendamento), só a sessão do
-    // barbeiro escreve. O PIN em si funciona como a trava real — quem não
-    // sabe o PIN não consegue usar a tela que chama essa escrita.
+    // Configuração pública do barbeiro (serviços, dias, horários, WhatsApp):
+    // não é segredo nenhum, e o cliente precisa disso ANTES mesmo de logar
+    // pra decidir se quer agendar — por isso a leitura é liberada geral.
+    // O PIN NUNCA fica neste documento (ver barberSecrets abaixo).
     match /barberConfig/{doc} {
-      allow read: if isSignedIn();
+      allow read: if true;
+      allow write: if isBarberSession();
+    }
+
+    // Só o hash do PIN (nunca o valor em texto puro) fica aqui, separado do
+    // resto da configuração. Importante: como a sessão do barbeiro é uma
+    // sessão anônima (qualquer visitante consegue criar uma sozinha, sem
+    // precisar saber o PIN), esta regra reduz a exposição do hash pra quem
+    // passou pelo fluxo do app, mas não é uma trava perfeita contra alguém
+    // deliberadamente mal-intencionado que crie uma sessão anônima na mão.
+    // Uma trava definitiva exigiria mover a comparação do PIN pra uma Cloud
+    // Function, que nunca expõe o hash a nenhum cliente.
+    match /barberSecrets/{doc} {
+      allow read: if isBarberSession();
       allow write: if isBarberSession();
     }
 

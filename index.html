@@ -577,7 +577,7 @@ import {
   signOut, onAuthStateChanged
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
 import {
-  getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc,
+  getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, deleteField,
   collection, getDocs, query, where, runTransaction
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
 
@@ -616,9 +616,32 @@ var DEFAULT_CONFIG = {
   workDays: [1,2,3,4,5,6],
   workPeriods: [{startHour: 9, endHour: 19}],
   slotMinutes: 30,
-  pin: "1234",
   whatsapp: ""
 };
+
+// O PIN nunca fica dentro de barberConfig (ver barberSecrets no
+// firestore.rules) — só o hash dele. Isso é o valor usado quando um
+// projeto novo ainda não tem nenhum PIN configurado.
+var DEFAULT_PIN = "1234";
+
+// ---------- HASH DO PIN (nunca guardamos o PIN em texto puro) ----------
+function randomHex(byteLen){
+  var arr = new Uint8Array(byteLen);
+  crypto.getRandomValues(arr);
+  return Array.from(arr).map(function(b){ return b.toString(16).padStart(2, "0"); }).join("");
+}
+
+async function sha256Hex(text){
+  var enc = new TextEncoder().encode(text);
+  var digestBuf = await crypto.subtle.digest("SHA-256", enc);
+  return Array.from(new Uint8Array(digestBuf)).map(function(b){ return b.toString(16).padStart(2, "0"); }).join("");
+}
+
+// Salga com um valor aleatório por instalação, pra dois barbeiros com o
+// mesmo PIN não terem o mesmo hash salvo no banco.
+async function hashPin(pin, salt){
+  return sha256Hex(salt + ":" + pin);
+}
 
 // Configs antigos (salvos antes dos períodos múltiplos existirem) só têm
 // startHour/endHour soltos. Isso transforma isso num período único, pra
@@ -680,6 +703,35 @@ function renderAuthLogo(dark){
 
 function pad(n){ return n < 10 ? "0"+n : ""+n; }
 function dateKey(d){ return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate()); }
+
+// A barbearia funciona sempre no horário de Brasília (America/Sao_Paulo),
+// não importa de onde o cliente esteja acessando. Sem isso, os cálculos de
+// "hoje" e "que horas são agora" usariam o fuso do dispositivo de quem
+// estiver com o app aberto — um cliente acessando de outro fuso (ou com o
+// relógio do celular fora de hora) veria dias e horários errados.
+//
+// Isso corrige o FUSO HORÁRIO (o app sempre calcula como se estivesse em
+// São Paulo, seja qual for o fuso do navegador). Não corrige um relógio do
+// aparelho genuinamente errado (ex: alguém que mexeu manualmente na data do
+// celular) — isso exigiria consultar um relógio de servidor, o que precisa
+// de mais infraestrutura do que só HTML+Firestore.
+function nowSP(){
+  var parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(new Date());
+  var map = {};
+  parts.forEach(function(p){ if(p.type !== "literal") map[p.type] = p.value; });
+  // Monta um Date "local" com os componentes de horário de SP, pra que
+  // getDay()/getHours()/getDate() etc. já leiam certo em qualquer lugar
+  // do código sem precisar mexer em cada função que usa esses métodos.
+  return new Date(
+    parseInt(map.year, 10), parseInt(map.month, 10) - 1, parseInt(map.day, 10),
+    parseInt(map.hour, 10), parseInt(map.minute, 10), parseInt(map.second, 10)
+  );
+}
 function escapeHtml(s){
   return String(s).replace(/[&<>"']/g, function(c){
     return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];
@@ -869,7 +921,7 @@ async function refreshClientOwnAppts(){
 
 function nextDays(n){
   var out = [];
-  var today = new Date();
+  var today = nowSP();
   today.setHours(0,0,0,0);
   var i = 0;
   while(out.length < n && i < 30){
@@ -885,8 +937,8 @@ function slotsForDate(d, durationMinutes){
   var slots = [];
   var step = state.config.slotMinutes;
   var duration = durationMinutes || step;
-  var isToday = dateKey(d) === dateKey(new Date());
-  var now = new Date();
+  var isToday = dateKey(d) === dateKey(nowSP());
+  var now = nowSP();
   var nowMin = now.getHours()*60 + now.getMinutes();
   state.config.workPeriods.forEach(function(period){
     var startMin = period.startHour * 60;
@@ -956,7 +1008,7 @@ function formatBRL(n){
 }
 
 function computeBarberStats(){
-  var now = new Date();
+  var now = nowSP();
   var weekStartKey = dateKey(startOfWeek(now));
   var monthKey = now.getFullYear() + "-" + pad(now.getMonth() + 1);
   var yearNum = now.getFullYear();
@@ -1212,7 +1264,7 @@ function wireSessionBarHandlers(el){
 }
 
 function renderClientOwnApptsHtml(){
-  var todayKey = dateKey(new Date());
+  var todayKey = dateKey(nowSP());
   var upcoming = state.clientOwnAppts.filter(function(a){
     return !a.done && a.date >= todayKey;
   });
@@ -1522,12 +1574,30 @@ function renderBarberAuth(el){
     btn.textContent = "Verificando...";
     try{
       // Sessão anônima só pra satisfazer as regras do Firestore (que
-      // exigem um usuário autenticado pra ler barberConfig). A trava real
-      // é a comparação do PIN abaixo, feita depois da leitura.
+      // exigem um usuário autenticado pra ler/escrever barberSecrets). A
+      // trava real é a comparação do hash abaixo, feita depois da leitura.
       if(!auth.currentUser){ await signInAnonymously(auth); }
-      var cfgSnap = await getDoc(doc(db, "barberConfig", "main"));
-      var savedPin = cfgSnap.exists() ? cfgSnap.data().pin : null;
-      if(savedPin && val === String(savedPin)){
+      var secretsSnap = await getDoc(doc(db, "barberSecrets", "main"));
+      var pinHash, pinSalt;
+      if(secretsSnap.exists()){
+        pinHash = secretsSnap.data().pinHash;
+        pinSalt = secretsSnap.data().pinSalt;
+      } else {
+        // Primeiro acesso depois de passar a hashear o PIN: se ainda
+        // existir um PIN em texto puro salvo do jeito antigo, migra ele
+        // pra um hash agora (sem o barbeiro precisar fazer nada). Se não
+        // existir nada ainda (instalação nova), usa o PIN padrão.
+        var legacyPin = (state.config && typeof state.config.pin === "string") ? state.config.pin : DEFAULT_PIN;
+        pinSalt = randomHex(16);
+        pinHash = await hashPin(legacyPin, pinSalt);
+        await setDoc(doc(db, "barberSecrets", "main"), { pinHash: pinHash, pinSalt: pinSalt });
+        if(state.config && typeof state.config.pin !== "undefined"){
+          try{ await updateDoc(doc(db, "barberConfig", "main"), { pin: deleteField() }); }catch(e){}
+          delete state.config.pin;
+        }
+      }
+      var typedHash = await hashPin(val, pinSalt);
+      if(typedHash === pinHash){
         state.barberLoggedIn = true;
         state.screen = "barberApp";
         render();
@@ -1556,7 +1626,7 @@ function renderBarberAuth(el){
 // ---------- BARBER APP ----------
 
 function renderBarberApp(el){
-  var todayKey = dateKey(new Date());
+  var todayKey = dateKey(nowSP());
   var upcoming = state.appts
     .filter(function(a){ return a.date >= todayKey || !a.done; })
     .sort(function(a,b){ return (a.date+a.time).localeCompare(b.date+b.time); });
@@ -1639,8 +1709,8 @@ function renderBarberApp(el){
       '<button class="ghost" id="addPeriodBtn" type="button" style="margin:4px 0 14px;">+ Adicionar período</button>'+
       '<label for="slotMin">Duração do intervalo de horários (min)</label>'+
       '<input type="text" id="slotMin" value="'+state.config.slotMinutes+'">'+
-      '<label for="newPin">PIN de acesso</label>'+
-      '<input type="password" id="newPin" value="'+escapeHtml(state.config.pin)+'">'+
+      '<label for="newPin">Trocar PIN de acesso</label>'+
+      '<input type="password" id="newPin" placeholder="Deixe em branco pra manter o PIN atual" value="" autocomplete="new-password">'+
       '<label for="barberWhatsapp">WhatsApp para receber confirmações e cancelamentos</label>'+
       '<input type="tel" id="barberWhatsapp" placeholder="(11) 91234-5678" value="'+escapeHtml(state.config.whatsapp || "")+'">'+
       '<button class="primary" id="saveCfgBtn">Salvar configurações</button>'+
@@ -1778,7 +1848,7 @@ function renderBarberApp(el){
       if(periods[i].startHour < periods[i-1].endHour){ periodsInvalid = true; }
     }
     var sm = parseInt(document.getElementById("slotMin").value, 10);
-    var pin = document.getElementById("newPin").value.trim().slice(0, 12);
+    var newPin = document.getElementById("newPin").value.trim().slice(0, 12);
     var whatsapp = document.getElementById("barberWhatsapp").value.trim();
     var saved = document.getElementById("cfgSaved");
     if(!periods.length || periodsInvalid){
@@ -1791,8 +1861,10 @@ function renderBarberApp(el){
       saved.style.display = "block";
       return;
     }
-    if(pin.length < 4){
-      saved.textContent = "O PIN precisa ter pelo menos 4 caracteres.";
+    // O campo de PIN só é validado se o barbeiro digitou algo — deixar em
+    // branco significa "não quero trocar o PIN agora".
+    if(newPin && newPin.length < 4){
+      saved.textContent = "O novo PIN precisa ter pelo menos 4 caracteres.";
       saved.style.display = "block";
       return;
     }
@@ -1804,20 +1876,33 @@ function renderBarberApp(el){
       saved.style.display = "block";
       return;
     }
-    var previous = {workPeriods: state.config.workPeriods, slotMinutes: state.config.slotMinutes, pin: state.config.pin, whatsapp: state.config.whatsapp};
+    var previous = {workPeriods: state.config.workPeriods, slotMinutes: state.config.slotMinutes, whatsapp: state.config.whatsapp};
     state.config.workPeriods = periods;
     state.config.slotMinutes = sm;
-    state.config.pin = pin;
     state.config.whatsapp = whatsapp;
     var ok = await saveConfig();
     if(!ok){
       state.config.workPeriods = previous.workPeriods;
       state.config.slotMinutes = previous.slotMinutes;
-      state.config.pin = previous.pin;
       state.config.whatsapp = previous.whatsapp;
       saved.textContent = saveErrorMessage();
       saved.style.display = "block";
       return;
+    }
+    // O PIN é salvo separado (hash + salt em barberSecrets, nunca em texto
+    // puro), só quando o barbeiro realmente digitou um novo valor.
+    if(newPin){
+      try{
+        var newSalt = randomHex(16);
+        var newHash = await hashPin(newPin, newSalt);
+        await setDoc(doc(db, "barberSecrets", "main"), { pinHash: newHash, pinSalt: newSalt });
+        document.getElementById("newPin").value = "";
+      }catch(e){
+        saved.textContent = "Configurações salvas, mas não foi possível trocar o PIN agora. Tente de novo.";
+        saved.style.display = "block";
+        render();
+        return;
+      }
     }
     saved.textContent = "Configurações salvas.";
     saved.style.display = "block";
