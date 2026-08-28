@@ -794,6 +794,59 @@
   .booking-summary .label{ color:var(--gray-500); }
   .booking-summary .value{ font-weight:700; text-align:right; }
 
+  /* Indicador de progresso do agendamento (1 → 2 → 3) */
+  .step-progress{
+    display:flex;
+    align-items:flex-start;
+    margin:2px 0 18px;
+  }
+  .step-node{
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:4px;
+    flex:0 0 60px;
+    width:60px;
+  }
+  .step-circle{
+    width:26px;
+    height:26px;
+    border-radius:50%;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:12px;
+    font-weight:700;
+    border:2px solid var(--gray-300);
+    color:var(--gray-500);
+    background:var(--white);
+    transition:background-color .15s ease, border-color .15s ease, color .15s ease;
+  }
+  .step-node.done .step-circle{
+    background:var(--gold);
+    border-color:var(--gold-dark);
+    color:var(--black);
+  }
+  .step-node.current .step-circle{
+    border-color:var(--black);
+    color:var(--black);
+    background:var(--gold-soft);
+  }
+  .step-label{
+    font-size:10px;
+    color:var(--gray-500);
+    text-align:center;
+    line-height:1.2;
+  }
+  .step-node.current .step-label{ color:var(--black); font-weight:700; }
+  .step-node.done .step-label{ color:var(--gray-700); }
+  .step-line{
+    flex:1 1 auto;
+    height:2px;
+    background:var(--gray-300);
+    margin-top:13px;
+  }
+
   /* Alternância "Marcar novo horário" / "Seus agendamentos" */
   .view-toggle{
     display:flex;
@@ -1171,11 +1224,11 @@ function bugReportSectionHtml(idPrefix, isOpen){
 function wireBugReportHandlers(idPrefix, context){
   var toggle = document.getElementById(idPrefix+"BugToggle");
   if(toggle){
-    toggle.onclick = function(){
+    makeActivatable(toggle, function(){
       if(idPrefix === "client") state.clientBugOpen = !state.clientBugOpen;
       else state.barberBugOpen = !state.barberBugOpen;
       render();
-    };
+    });
   }
   var btn = document.getElementById(idPrefix+"ReportBtn");
   if(!btn) return;
@@ -1778,27 +1831,27 @@ function renderSessionBarHtml(){
 
 function wireSessionBarHandlers(el){
   var logoutBtn = document.getElementById("logoutClient");
-  if(logoutBtn) logoutBtn.onclick = doClientLogout;
+  if(logoutBtn) makeActivatable(logoutBtn, doClientLogout);
 
   var editBtn = document.getElementById("editNameBtn");
   if(editBtn){
-    editBtn.onclick = function(){
+    makeActivatable(editBtn, function(){
       state.clientEditingName = true;
       render();
-    };
+    });
   }
 
   var cancelBtn = document.getElementById("cancelNameBtn");
   if(cancelBtn){
-    cancelBtn.onclick = function(){
+    makeActivatable(cancelBtn, function(){
       state.clientEditingName = false;
       render();
-    };
+    });
   }
 
   var saveBtn = document.getElementById("saveNameBtn");
   if(saveBtn){
-    saveBtn.onclick = async function(){
+    makeActivatable(saveBtn, async function(){
       var input = document.getElementById("clientNameInput");
       var errBox = document.getElementById("nameError");
       var val = input.value.trim().slice(0, 60);
@@ -1820,7 +1873,7 @@ function wireSessionBarHandlers(el){
         errBox.textContent = saveErrorMessage();
         errBox.style.display = "block";
       }
-    };
+    });
   }
 }
 
@@ -2015,6 +2068,69 @@ function renderClientServiceCardHtml(services, selectedSvc){
   '</div>';
 }
 
+// Etapas 2 e 3 do agendamento (dia + horário) num único card. Igual ao
+// serviço, uma vez que os dois já foram escolhidos, recolhe pra uma linha
+// de resumo com "trocar" — sem isso, o calendário do mês inteiro e a grade
+// de horários ficavam sempre abertos, mesmo depois de já escolhidos.
+function renderClientDateTimeCardHtml(selectedSvc){
+  var isComplete = selectedSvc && state.clientSelectedDate && state.clientSelectedSlot;
+  if(isComplete){
+    return '<div class="card">'+
+      '<div class="step-summary-row">'+
+        '<div>'+
+          '<h2 style="padding-bottom:0; margin-bottom:3px;">2. Dia e horário</h2>'+
+          '<p class="sub" style="margin:0;">'+formatDateLabel(state.clientSelectedDate)+' às '+state.clientSelectedSlot+'</p>'+
+        '</div>'+
+        '<span class="backlink" id="changeDateBtn">trocar</span>'+
+      '</div>'+
+    '</div>';
+  }
+
+  var slotsHtml = '<p class="empty">Escolha um serviço para ver os horários</p>';
+  if(selectedSvc && !state.clientSelectedDate){
+    slotsHtml = '<p class="empty">Escolha um dia para ver os horários</p>';
+  }
+  if(selectedSvc && state.clientSelectedDate){
+    var selDate = dateFromKey(state.clientSelectedDate);
+    var slots = selDate ? slotsForDate(selDate, selectedSvc.minutes) : [];
+    if(slots.length === 0){
+      slotsHtml = '<p class="empty">Sem horários livres nesse dia pra esse serviço ('+selectedSvc.minutes+' min)</p>';
+    } else {
+      slotsHtml = '<div class="slots">' + slots.map(function(t){
+        var taken = !isSlotAvailable(state.clientSelectedDate, t, selectedSvc.minutes);
+        var sel = state.clientSelectedSlot === t;
+        var extra = taken ? ' aria-disabled="true" aria-label="'+t+', indisponível"' : ' aria-pressed="'+sel+'" aria-label="'+t+'"';
+        return '<div class="slot'+(taken?' taken':'')+(sel?' selected':'')+'" data-slot="'+(taken?'':t)+'"'+extra+'>'+t+'</div>';
+      }).join("") + '</div>';
+    }
+  }
+
+  return '<div class="card">'+
+    '<h2>2. Escolha o dia</h2>'+
+    renderClientCalendarHtml()+
+    '<h2 style="margin-top:18px;">3. Escolha o horário</h2>'+
+    slotsHtml+
+  '</div>';
+}
+
+// Indicador simples de progresso (1 → 2 → 3), pra deixar visualmente claro
+// em que ponto do agendamento o cliente está, sem precisar ler os títulos.
+function renderClientStepsHtml(step1Done, step2Done){
+  var steps = [
+    {n:1, label:"Serviço", done: step1Done},
+    {n:2, label:"Dia e horário", done: step2Done},
+    {n:3, label:"Confirmar", done: false}
+  ];
+  var current = !step1Done ? 1 : (!step2Done ? 2 : 3);
+  return '<div class="step-progress">'+steps.map(function(s){
+    var cls = s.done ? "done" : (s.n === current ? "current" : "");
+    return '<div class="step-node '+cls+'">'+
+      '<span class="step-circle">'+(s.done ? "&#10003;" : s.n)+'</span>'+
+      '<span class="step-label">'+s.label+'</span>'+
+    '</div>';
+  }).join('<div class="step-line"></div>')+'</div>';
+}
+
 function renderClientApp(el){
   if(state.clientConfirmed){
     var a = state.clientConfirmed;
@@ -2040,7 +2156,7 @@ function renderClientApp(el){
       state.clientView = "book";
       render();
     };
-    document.getElementById("logoutClient").onclick = doClientLogout;
+    makeActivatable(document.getElementById("logoutClient"), doClientLogout);
     wireClientOwnApptsHandlers(el);
     return;
   }
@@ -2048,25 +2164,6 @@ function renderClientApp(el){
   var services = state.config.services;
 
   var selectedSvc = services.find(function(s){ return s.id === state.clientSelectedService; });
-
-  var slotsHtml = '<p class="empty">Escolha um serviço para ver os horários</p>';
-  if(selectedSvc && !state.clientSelectedDate){
-    slotsHtml = '<p class="empty">Escolha um dia para ver os horários</p>';
-  }
-  if(selectedSvc && state.clientSelectedDate){
-    var selDate = dateFromKey(state.clientSelectedDate);
-    var slots = selDate ? slotsForDate(selDate, selectedSvc.minutes) : [];
-    if(slots.length === 0){
-      slotsHtml = '<p class="empty">Sem horários livres nesse dia pra esse serviço ('+selectedSvc.minutes+' min)</p>';
-    } else {
-      slotsHtml = '<div class="slots">' + slots.map(function(t){
-        var taken = !isSlotAvailable(state.clientSelectedDate, t, selectedSvc.minutes);
-        var sel = state.clientSelectedSlot === t;
-        var extra = taken ? ' aria-disabled="true" aria-label="'+t+', indisponível"' : ' aria-pressed="'+sel+'" aria-label="'+t+'"';
-        return '<div class="slot'+(taken?' taken':'')+(sel?' selected':'')+'" data-slot="'+(taken?'':t)+'"'+extra+'>'+t+'</div>';
-      }).join("") + '</div>';
-    }
-  }
 
   // Resumo compacto do que já foi escolhido, mostrado logo acima do botão
   // de confirmar — sem isso, o cliente teria que rolar a tela toda pra
@@ -2094,14 +2191,12 @@ function renderClientApp(el){
   if(upcoming.length && state.clientView === "appts"){
     bodyHtml = renderClientOwnApptsHtml();
   } else {
+    var step1Done = !!selectedSvc;
+    var step2Done = !!(selectedSvc && state.clientSelectedDate && state.clientSelectedSlot);
     bodyHtml =
+      renderClientStepsHtml(step1Done, step2Done)+
       renderClientServiceCardHtml(services, selectedSvc)+
-      '<div class="card">'+
-        '<h2>2. Escolha o dia</h2>'+
-        renderClientCalendarHtml()+
-        '<h2 style="margin-top:18px;">3. Escolha o horário</h2>'+
-        slotsHtml+
-      '</div>'+
+      renderClientDateTimeCardHtml(selectedSvc)+
       '<div class="card">'+
         summaryHtml+
         '<div id="cliError" class="error" role="alert" aria-live="polite" style="display:none;"></div>'+
@@ -2133,12 +2228,21 @@ function renderClientApp(el){
 
   var changeSvcBtn = document.getElementById("changeSvcBtn");
   if(changeSvcBtn){
-    changeSvcBtn.onclick = function(){
+    makeActivatable(changeSvcBtn, function(){
       state.clientSelectedService = null;
       state.clientSelectedDate = null;
       state.clientSelectedSlot = null;
       render();
-    };
+    });
+  }
+
+  var changeDateBtn = document.getElementById("changeDateBtn");
+  if(changeDateBtn){
+    makeActivatable(changeDateBtn, function(){
+      state.clientSelectedDate = null;
+      state.clientSelectedSlot = null;
+      render();
+    });
   }
 
   el.querySelectorAll(".svc").forEach(function(node){
