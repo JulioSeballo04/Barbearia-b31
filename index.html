@@ -614,12 +614,24 @@ var DEFAULT_CONFIG = {
     {id:"s3", name:"Corte + Barba", price:55, minutes:50}
   ],
   workDays: [1,2,3,4,5,6],
-  startHour: 9,
-  endHour: 19,
+  workPeriods: [{startHour: 9, endHour: 19}],
   slotMinutes: 30,
   pin: "1234",
   whatsapp: ""
 };
+
+// Configs antigos (salvos antes dos períodos múltiplos existirem) só têm
+// startHour/endHour soltos. Isso transforma isso num período único, pra
+// quem já usava o app não perder a configuração que tinha.
+function migrateConfig(cfg){
+  if(!cfg.workPeriods || !cfg.workPeriods.length){
+    cfg.workPeriods = [{
+      startHour: (typeof cfg.startHour === "number") ? cfg.startHour : 9,
+      endHour: (typeof cfg.endHour === "number") ? cfg.endHour : 19
+    }];
+  }
+  return cfg;
+}
 
 var state = {
   screen: "landing", // landing | clientAuth | clientPhone | clientApp | barberAuth | barberApp
@@ -750,7 +762,7 @@ async function loadData(){
   try{
     var cfgSnap = await getDoc(doc(db, "barberConfig", "main"));
     if(cfgSnap.exists()){
-      state.config = cfgSnap.data();
+      state.config = migrateConfig(cfgSnap.data());
     } else {
       state.config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
       await setDoc(doc(db, "barberConfig", "main"), state.config);
@@ -873,16 +885,19 @@ function slotsForDate(d, durationMinutes){
   var slots = [];
   var step = state.config.slotMinutes;
   var duration = durationMinutes || step;
-  var startMin = state.config.startHour * 60;
-  var endMin = state.config.endHour * 60;
   var isToday = dateKey(d) === dateKey(new Date());
   var now = new Date();
   var nowMin = now.getHours()*60 + now.getMinutes();
-  for(var m = startMin; m + duration <= endMin; m += step){
-    if(isToday && m <= nowMin) continue;
-    var h = Math.floor(m/60), mm = m%60;
-    slots.push(pad(h)+":"+pad(mm));
-  }
+  state.config.workPeriods.forEach(function(period){
+    var startMin = period.startHour * 60;
+    var endMin = period.endHour * 60;
+    for(var m = startMin; m + duration <= endMin; m += step){
+      if(isToday && m <= nowMin) continue;
+      var h = Math.floor(m/60), mm = m%60;
+      slots.push(pad(h)+":"+pad(mm));
+    }
+  });
+  slots.sort();
   return slots;
 }
 
@@ -1231,17 +1246,24 @@ function wireClientOwnApptsHandlers(el){
       if(!ok) return;
       btn.disabled = true;
       btn.textContent = "Cancelando...";
+      // Abre a aba em branco AGORA, ainda dentro do clique original — celulares
+      // (principalmente Safari/iOS) bloqueiam window.open() se ele acontecer só
+      // depois de um await, porque nesse ponto o navegador já não considera mais
+      // que foi resposta direta a um toque do usuário. Abrindo a aba antes e só
+      // preenchendo o destino dela depois, o popup nunca é bloqueado.
+      var waTab = state.config.whatsapp ? window.open("", "_blank") : null;
       var okSave = await cancelApptDoc(id);
       if(!okSave){
+        if(waTab) waTab.close();
         btn.disabled = false;
         btn.textContent = "Cancelar";
         showToast(saveErrorMessage(), true);
         return;
       }
       state.clientOwnAppts = state.clientOwnAppts.filter(function(a){ return a.id !== id; });
-      if(state.config.whatsapp){
+      if(waTab){
         var link = waLink(state.config.whatsapp, buildCancelWaMessage(target));
-        if(link) window.open(link, "_blank", "noopener");
+        if(link){ waTab.location = link; } else { waTab.close(); }
       }
       render();
     };
@@ -1409,10 +1431,17 @@ function renderClientApp(el){
     // A checagem acima é só pra UX (evitar mostrar "confirmando" num
     // horário já óbvio como ocupado). A trava real contra dois clientes
     // confirmando o mesmo horário ao mesmo tempo é a transação abaixo.
+    // A aba do WhatsApp é aberta em branco JÁ AQUI, antes do await — celulares
+    // (principalmente Safari/iOS) bloqueiam window.open() se ele só acontecer
+    // depois de uma pausa assíncrona, porque nesse ponto deixa de contar como
+    // resposta direta a um toque do usuário. Preenchendo o destino da aba só
+    // depois que a gravação terminar, o popup nunca é bloqueado.
+    var waTab = state.config.whatsapp ? window.open("", "_blank") : null;
     var newApptId;
     try{
       newApptId = await bookAppointmentTx(appt);
     }catch(e){
+      if(waTab) waTab.close();
       if(e && e.message === "SLOT_TAKEN"){
         errBox.textContent = "Esse horário acabou de ser reservado por outra pessoa. Escolha outro.";
       } else {
@@ -1434,14 +1463,9 @@ function renderClientApp(el){
       time: appt.time
     };
     state.clientOwnAppts.push(Object.assign({id: newApptId}, appt));
-    // Abre o WhatsApp automaticamente com a confirmação já preenchida. Como
-    // isso ainda acontece dentro do mesmo clique do usuário (só depois de
-    // um await), a maioria dos navegadores permite o popup sem bloquear;
-    // o botão na tela de sucesso continua ali como alternativa caso algum
-    // navegador bloqueie mesmo assim.
-    if(state.config.whatsapp){
+    if(waTab){
       var waLinkUrl = waLink(state.config.whatsapp, buildBookingWaMessage(state.clientConfirmed));
-      if(waLinkUrl) window.open(waLinkUrl, "_blank", "noopener");
+      if(waLinkUrl){ waTab.location = waLinkUrl; } else { waTab.close(); }
     }
     render();
   };
@@ -1559,6 +1583,19 @@ function renderBarberApp(el){
     return '<span class="'+(on?'on':'')+'" data-day="'+idx+'" aria-pressed="'+on+'">'+name+'</span>';
   }).join("");
 
+  var periodsHtml = state.config.workPeriods.map(function(p, i){
+    var removeBtn = state.config.workPeriods.length > 1
+      ? '<button class="danger" data-removeperiod="'+i+'" type="button">Remover</button>'
+      : '';
+    return '<div class="grid2" data-period-row="'+i+'" style="align-items:end; margin-bottom:10px;">'+
+      '<div><label>Abre às (hora)</label><input type="text" data-period-field="startHour" data-idx="'+i+'" value="'+p.startHour+'"></div>'+
+      '<div style="display:flex; gap:8px; align-items:end;">'+
+        '<div style="flex:1;"><label>Fecha às (hora)</label><input type="text" data-period-field="endHour" data-idx="'+i+'" value="'+p.endHour+'"></div>'+
+        removeBtn+
+      '</div>'+
+    '</div>';
+  }).join("");
+
   var stats = computeBarberStats();
   var statsHtml =
     '<div class="card">'+
@@ -1596,10 +1633,10 @@ function renderBarberApp(el){
       '<p class="sub">Dias e horários de atendimento</p>'+
       '<label>Dias que atende</label>'+
       '<div class="weekday-toggle">'+weekdayToggle+'</div>'+
-      '<div class="grid2">'+
-        '<div><label for="startHour">Abre às (hora)</label><input type="text" id="startHour" value="'+state.config.startHour+'"></div>'+
-        '<div><label for="endHour">Fecha às (hora)</label><input type="text" id="endHour" value="'+state.config.endHour+'"></div>'+
-      '</div>'+
+      '<label>Períodos de atendimento no dia</label>'+
+      '<p class="sub" style="margin:-4px 0 10px;">Ex: 3 períodos — 09h às 12h, 14h às 17h e 18h às 21h.</p>'+
+      '<div id="periodsList">'+periodsHtml+'</div>'+
+      '<button class="ghost" id="addPeriodBtn" type="button" style="margin:4px 0 14px;">+ Adicionar período</button>'+
       '<label for="slotMin">Duração do intervalo de horários (min)</label>'+
       '<input type="text" id="slotMin" value="'+state.config.slotMinutes+'">'+
       '<label for="newPin">PIN de acesso</label>'+
@@ -1700,19 +1737,57 @@ function renderBarberApp(el){
     });
   });
 
+  document.getElementById("addPeriodBtn").onclick = function(){
+    if(state.config.workPeriods.length >= 6){
+      showToast("Máximo de 6 períodos por dia.", true);
+      return;
+    }
+    var last = state.config.workPeriods[state.config.workPeriods.length - 1];
+    // Sugere um período logo depois do último, já dando um intervalo de 1h
+    // pra não nascer colado no anterior — o barbeiro pode ajustar na hora.
+    var suggestedStart = Math.min(last.endHour + 1, 22);
+    var suggestedEnd = Math.min(suggestedStart + 2, 23);
+    state.config.workPeriods.push({startHour: suggestedStart, endHour: suggestedEnd});
+    render();
+  };
+
+  el.querySelectorAll("[data-removeperiod]").forEach(function(btn){
+    btn.onclick = function(){
+      var idx = parseInt(btn.getAttribute("data-removeperiod"), 10);
+      state.config.workPeriods.splice(idx, 1);
+      render();
+    };
+  });
+
   document.getElementById("saveCfgBtn").onclick = async function(){
-    var sh = parseInt(document.getElementById("startHour").value, 10);
-    var eh = parseInt(document.getElementById("endHour").value, 10);
+    var periodRows = el.querySelectorAll("[data-period-row]");
+    var periods = [];
+    var periodsInvalid = false;
+    periodRows.forEach(function(row){
+      var sh = parseInt(row.querySelector('[data-period-field="startHour"]').value, 10);
+      var eh = parseInt(row.querySelector('[data-period-field="endHour"]').value, 10);
+      if(isNaN(sh) || isNaN(eh) || sh < 0 || sh > 23 || eh < 1 || eh > 24 || sh >= eh){
+        periodsInvalid = true;
+      }
+      periods.push({startHour: sh, endHour: eh});
+    });
+    // Períodos não podem se sobrepor (ex: 09h-13h e 12h-15h), senão o mesmo
+    // horário apareceria duplicado na lista do cliente.
+    periods.sort(function(a,b){ return a.startHour - b.startHour; });
+    for(var i = 1; i < periods.length; i++){
+      if(periods[i].startHour < periods[i-1].endHour){ periodsInvalid = true; }
+    }
     var sm = parseInt(document.getElementById("slotMin").value, 10);
     var pin = document.getElementById("newPin").value.trim().slice(0, 12);
     var whatsapp = document.getElementById("barberWhatsapp").value.trim();
     var saved = document.getElementById("cfgSaved");
-    var invalid =
-      isNaN(sh) || isNaN(eh) || isNaN(sm) ||
-      sh < 0 || sh > 23 || eh < 1 || eh > 24 || sh >= eh ||
-      sm <= 0 || sm > 240;
-    if(invalid){
-      saved.textContent = "Confira os valores de horário (0-23h, duração de 1 a 240 min).";
+    if(!periods.length || periodsInvalid){
+      saved.textContent = "Confira os períodos de atendimento (0-23h, sem se sobrepor).";
+      saved.style.display = "block";
+      return;
+    }
+    if(isNaN(sm) || sm <= 0 || sm > 240){
+      saved.textContent = "Confira a duração do intervalo de horários (1 a 240 min).";
       saved.style.display = "block";
       return;
     }
@@ -1729,16 +1804,14 @@ function renderBarberApp(el){
       saved.style.display = "block";
       return;
     }
-    var previous = {startHour: state.config.startHour, endHour: state.config.endHour, slotMinutes: state.config.slotMinutes, pin: state.config.pin, whatsapp: state.config.whatsapp};
-    state.config.startHour = sh;
-    state.config.endHour = eh;
+    var previous = {workPeriods: state.config.workPeriods, slotMinutes: state.config.slotMinutes, pin: state.config.pin, whatsapp: state.config.whatsapp};
+    state.config.workPeriods = periods;
     state.config.slotMinutes = sm;
     state.config.pin = pin;
     state.config.whatsapp = whatsapp;
     var ok = await saveConfig();
     if(!ok){
-      state.config.startHour = previous.startHour;
-      state.config.endHour = previous.endHour;
+      state.config.workPeriods = previous.workPeriods;
       state.config.slotMinutes = previous.slotMinutes;
       state.config.pin = previous.pin;
       state.config.whatsapp = previous.whatsapp;
@@ -1748,6 +1821,7 @@ function renderBarberApp(el){
     }
     saved.textContent = "Configurações salvas.";
     saved.style.display = "block";
+    render();
   };
 
   renderServicesList();
