@@ -617,6 +617,114 @@
     font-family:Georgia,"Iowan Old Style","Palatino Linotype",serif;
   }
   .stat-value.money{ color:var(--gold-dark); }
+
+  .cal-head{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    margin:6px 0 10px;
+  }
+  .cal-head .cal-title{
+    font-weight:700;
+    font-size:15px;
+    text-transform:capitalize;
+  }
+  .cal-nav{
+    display:flex;
+    gap:6px;
+  }
+  .cal-nav button{
+    background:transparent;
+    border:1px solid var(--line);
+    border-radius:6px;
+    width:30px;
+    height:30px;
+    font-size:14px;
+    cursor:pointer;
+  }
+  .cal-dow{
+    display:grid;
+    grid-template-columns:repeat(7,1fr);
+    gap:4px;
+    margin-bottom:4px;
+  }
+  .cal-dow span{
+    text-align:center;
+    font-size:11px;
+    color:var(--gray-500);
+    text-transform:uppercase;
+  }
+  .cal-grid{
+    display:grid;
+    grid-template-columns:repeat(7,1fr);
+    gap:4px;
+  }
+  .cal-day{
+    aspect-ratio:1;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    gap:2px;
+    border:1px solid var(--line);
+    border-radius:6px;
+    background:var(--white);
+    font-size:12px;
+    cursor:pointer;
+    position:relative;
+    min-height:40px;
+  }
+  .cal-day.cal-empty{
+    border:none;
+    background:transparent;
+    cursor:default;
+  }
+  .cal-day .cal-num{ font-weight:600; }
+  .cal-day.is-today{ border-color:var(--gold-dark); border-width:2px; }
+  .cal-day.is-past{ color:var(--gray-300); background:var(--gray-100); }
+  .cal-day.is-off{ background:var(--gray-100); color:var(--gray-500); }
+  .cal-day.is-closed{ background:var(--gray-100); text-decoration:line-through; color:var(--gray-500); }
+  .cal-day.is-locked{ opacity:0.45; }
+  .cal-day.has-appts{ border-color:var(--gold); }
+  .cal-day.is-selected{ background:var(--black); color:var(--white); border-color:var(--gold); }
+  .cal-day .cal-dot{
+    width:6px; height:6px; border-radius:50%;
+    background:var(--gold-dark);
+  }
+  .cal-day.is-selected .cal-dot{ background:var(--gold); }
+  .cal-legend{
+    display:flex;
+    flex-wrap:wrap;
+    gap:12px;
+    margin-top:10px;
+    font-size:11px;
+    color:var(--gray-500);
+  }
+  .cal-legend span{ display:flex; align-items:center; gap:5px; }
+  .cal-legend .dot{ width:7px; height:7px; border-radius:50%; display:inline-block; }
+  .day-editor{
+    margin-top:16px;
+    padding-top:14px;
+    border-top:1px solid var(--line);
+  }
+  .day-editor .day-appt-row{
+    font-size:13px;
+    padding:6px 0;
+    border-bottom:1px solid var(--line);
+  }
+  .month-unlock-box{
+    margin-top:10px;
+    padding:12px;
+    border:1px dashed var(--line);
+    border-radius:6px;
+    font-size:13px;
+  }
+  .client-row{
+    padding:10px 0;
+    border-bottom:1px solid var(--line);
+  }
+  .client-row .who{ font-weight:600; font-size:14px; }
+  .client-row .client-meta{ font-size:12px; color:var(--gray-500); margin-top:2px; }
 </style>
 </head>
 <body>
@@ -633,7 +741,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
 import {
   getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, deleteField,
-  collection, getDocs, query, where, runTransaction
+  collection, getDocs, query, where, documentId, runTransaction
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
 
 var firebaseConfig = {
@@ -671,8 +779,15 @@ var DEFAULT_CONFIG = {
   workDays: [1,2,3,4,5,6],
   workPeriods: [{startHour: 9, endHour: 19}],
   slotMinutes: 30,
-  whatsapp: ""
+  whatsapp: "",
+  // Meses (além do mês corrente, que é sempre liberado) que o barbeiro já
+  // liberou para agendamento, no formato "AAAA-MM". Assim ele controla até
+  // quando os clientes podem marcar horário — sem isso, o próximo mês só
+  // libera automaticamente quando o calendário virar.
+  unlockedMonths: []
 };
+
+var MONTH_NAMES = ["janeiro","fevereiro","março","abril","maio","junho","julho","agosto","setembro","outubro","novembro","dezembro"];
 
 // O PIN nunca fica dentro de barberConfig (ver barberSecrets no
 // firestore.rules) — só o hash dele. Isso é o valor usado quando um
@@ -708,6 +823,7 @@ function migrateConfig(cfg){
       endHour: (typeof cfg.endHour === "number") ? cfg.endHour : 19
     }];
   }
+  if(!Array.isArray(cfg.unlockedMonths)) cfg.unlockedMonths = [];
   return cfg;
 }
 
@@ -725,7 +841,15 @@ var state = {
   clientSelectedDate: null,
   clientSelectedSlot: null,
   clientConfirmed: null,
-  barberLoggedIn: false
+  barberLoggedIn: false,
+  scheduleOverrides: {},     // {dateKey: {closed:bool, periods:[{startHour,endHour}]}} — exceções por dia
+  overridesLoadedMonths: {}, // {"AAAA-MM": true} — evita buscar o mesmo mês de novo
+  barberCalendarMonth: null, // primeiro dia do mês mostrado no calendário do barbeiro
+  barberSelectedDay: null,   // dateKey do dia clicado no calendário
+  barberDayDraft: null,      // rascunho em edição do horário do dia selecionado
+  barberClients: [],         // lista de clientes cadastrados (nome, email, telefone)
+  barberClientsLoaded: false,
+  barberClientSearch: ""
 };
 
 // Official B31 badge artwork (cropped from the shop's real logo image),
@@ -928,6 +1052,11 @@ async function loadData(){
   }catch(e){
     state.config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
   }
+  var thisMonth = nowSP();
+  var nextMonth = new Date(thisMonth.getFullYear(), thisMonth.getMonth()+1, 1);
+  await ensureOverridesLoaded(thisMonth);
+  await ensureOverridesLoaded(nextMonth);
+  state.barberCalendarMonth = firstDayOfMonth(thisMonth);
   state.loaded = true;
 }
 
@@ -1033,16 +1162,94 @@ async function refreshClientOwnAppts(){
   }catch(e){ return false; }
 }
 
+// ---------- EXCEÇÕES DE HORÁRIO POR DIA (scheduleOverrides) ----------
+// Além da grade semanal recorrente (workDays/workPeriods), o barbeiro pode
+// abrir uma exceção pontual pra um dia específico: fechar um dia que
+// normalmente atenderia (ex: feriado, folga) ou abrir/ajustar horário num
+// dia que normalmente não atenderia (ex: um sábado especial). O documento
+// tem o próprio dateKey como ID; guardamos "date" também no corpo pra dar
+// pra fazer range query por documentId() sem precisar de índice composto.
+
+function monthKeyStr(d){ return d.getFullYear()+"-"+pad(d.getMonth()+1); }
+
+function isMonthUnlocked(d){
+  var mk = monthKeyStr(d);
+  if(mk === monthKeyStr(nowSP())) return true; // mês corrente sempre liberado
+  return (state.config.unlockedMonths || []).indexOf(mk) !== -1;
+}
+
+function firstDayOfMonth(d){ return new Date(d.getFullYear(), d.getMonth(), 1); }
+function lastDayOfMonth(d){ return new Date(d.getFullYear(), d.getMonth()+1, 0); }
+
+// Busca as exceções do mês dado, só se ainda não tiverem sido buscadas
+// nesta sessão (cache simples em memória por "AAAA-MM").
+async function ensureOverridesLoaded(monthDate){
+  var mk = monthKeyStr(monthDate);
+  if(state.overridesLoadedMonths[mk]) return true;
+  try{
+    var startKey = dateKey(firstDayOfMonth(monthDate));
+    var endKey = dateKey(lastDayOfMonth(monthDate));
+    var q = query(collection(db, "scheduleOverrides"),
+      where(documentId(), ">=", startKey), where(documentId(), "<=", endKey));
+    var snap = await getDocs(q);
+    snap.forEach(function(d){ state.scheduleOverrides[d.id] = d.data(); });
+    state.overridesLoadedMonths[mk] = true;
+    return true;
+  }catch(e){ return false; }
+}
+
+// Salva (ou remove, se overrideObj for null) a exceção de um dia específico.
+async function saveDayOverride(dayKey, overrideObj){
+  try{
+    if(overrideObj){
+      await setDoc(doc(db, "scheduleOverrides", dayKey), Object.assign({date: dayKey}, overrideObj));
+      state.scheduleOverrides[dayKey] = overrideObj;
+    } else {
+      await deleteDoc(doc(db, "scheduleOverrides", dayKey));
+      delete state.scheduleOverrides[dayKey];
+    }
+    return true;
+  }catch(e){ return false; }
+}
+
+// Busca todos os clientes já cadastrados (nome, email, telefone), pro
+// barbeiro conseguir consultar sem precisar abrir cada agendamento. Só é
+// chamada dentro do painel do barbeiro — a regra do Firestore só libera
+// leitura da coleção inteira "clients" pra sessão do barbeiro.
+async function refreshClients(){
+  try{
+    var snap = await getDocs(collection(db, "clients"));
+    var list = [];
+    snap.forEach(function(d){ list.push(Object.assign({uid: d.id}, d.data())); });
+    list.sort(function(a,b){ return (a.name || "").localeCompare(b.name || "", "pt-BR"); });
+    state.barberClients = list;
+    state.barberClientsLoaded = true;
+    return true;
+  }catch(e){ return false; }
+}
+
 function nextDays(n){
   var out = [];
   var today = nowSP();
   today.setHours(0,0,0,0);
+  // O horizonte de agendamento nunca passa do fim do mês corrente, a não
+  // ser que o barbeiro já tenha liberado o mês seguinte — por isso o loop
+  // para tanto quando junta "n" dias válidos quanto quando sai do
+  // horizonte liberado, o que vier primeiro (em vez de um limite fixo de
+  // dias corridos que poderia atravessar pra um mês ainda travado).
   var i = 0;
-  while(out.length < n && i < 30){
+  while(out.length < n && i < 62){
     var d = new Date(today);
     d.setDate(d.getDate() + i);
-    if(state.config.workDays.indexOf(d.getDay()) !== -1){ out.push(d); }
     i++;
+    if(!isMonthUnlocked(d)) break;
+    var k = dateKey(d);
+    var override = state.scheduleOverrides[k];
+    if(override && override.closed) continue;
+    var isDefaultWorkDay = state.config.workDays.indexOf(d.getDay()) !== -1;
+    var hasCustomPeriods = override && Array.isArray(override.periods) && override.periods.length;
+    if(!isDefaultWorkDay && !hasCustomPeriods) continue;
+    out.push(d);
   }
   return out;
 }
@@ -1054,7 +1261,11 @@ function slotsForDate(d, durationMinutes){
   var isToday = dateKey(d) === dateKey(nowSP());
   var now = nowSP();
   var nowMin = now.getHours()*60 + now.getMinutes();
-  state.config.workPeriods.forEach(function(period){
+  var override = state.scheduleOverrides[dateKey(d)];
+  if(override && override.closed) return slots;
+  var periods = (override && Array.isArray(override.periods) && override.periods.length)
+    ? override.periods : state.config.workPeriods;
+  periods.forEach(function(period){
     var startMin = period.startHour * 60;
     var endMin = period.endHour * 60;
     for(var m = startMin; m + duration <= endMin; m += step){
@@ -1302,8 +1513,11 @@ function renderClientPhoneStep(el){
   el.innerHTML =
     renderAuthLogo()+
     '<div class="card">'+
-      '<h2>Falta só o telefone</h2>'+
-      '<p class="sub">Olá, '+escapeHtml(user.displayName || "")+'! Informe seu telefone com DDD pra concluir o cadastro.</p>'+
+      '<h2>Falta pouco</h2>'+
+      '<p class="sub">Confirme seu nome e informe seu telefone com DDD pra concluir o cadastro.</p>'+
+      '<label for="nameStepInput">Nome</label>'+
+      '<input type="text" id="nameStepInput" placeholder="Seu nome" maxlength="60" value="'+escapeHtml(user.displayName || "")+'">'+
+      '<p class="sub" style="margin:4px 0 0;">É esse nome que vai aparecer pro barbeiro nos agendamentos.</p>'+
       '<label for="phoneStepInput">Telefone</label>'+
       '<input type="tel" id="phoneStepInput" placeholder="(11) 91234-5678" autocomplete="tel">'+
       '<div id="phoneStepError" class="error" role="alert" aria-live="polite" style="display:none;"></div>'+
@@ -1312,10 +1526,19 @@ function renderClientPhoneStep(el){
 
   attachPhoneMask(document.getElementById("phoneStepInput"));
   document.getElementById("phoneStepBtn").onclick = async function(){
+    var nameInput = document.getElementById("nameStepInput");
     var input = document.getElementById("phoneStepInput");
     var errBox = document.getElementById("phoneStepError");
+    var name = nameInput.value.trim().slice(0, 60);
     var phone = input.value.trim();
+    nameInput.classList.remove("invalid");
     input.classList.remove("invalid");
+    if(!name){
+      nameInput.classList.add("invalid");
+      errBox.textContent = "Informe seu nome.";
+      errBox.style.display = "block";
+      return;
+    }
     if(!isValidPhone(phone)){
       input.classList.add("invalid");
       errBox.textContent = "Informe um telefone válido, com DDD.";
@@ -1329,12 +1552,12 @@ function renderClientPhoneStep(el){
     try{
       await setDoc(doc(db, "clients", user.uid), {
         uid: user.uid,
-        name: user.displayName || "",
+        name: name,
         email: user.email || "",
         photoURL: user.photoURL || "",
         phone: phone
       }, { merge: true });
-      state.clientSession = {uid: user.uid, name: user.displayName, phone: phone, email: user.email};
+      state.clientSession = {uid: user.uid, name: name, phone: phone, email: user.email};
       state.pendingGoogleUser = null;
       state.screen = "clientApp";
       render();
@@ -1759,6 +1982,7 @@ function renderBarberAuth(el){
         state.screen = "barberApp";
         render();
         refreshAppts().then(render);
+        refreshClients().then(render);
       } else {
         btn.disabled = false;
         btn.textContent = "Entrar";
@@ -1781,6 +2005,375 @@ function renderBarberAuth(el){
 }
 
 // ---------- BARBER APP ----------
+
+// ---------- CALENDÁRIO DO BARBEIRO (visão do mês + exceção por dia) ----------
+
+function renderBarberCalendarCardHtml(){
+  var monthDate = state.barberCalendarMonth;
+  var todayKey = dateKey(nowSP());
+  var first = firstDayOfMonth(monthDate);
+  var last = lastDayOfMonth(monthDate);
+  var startOffset = first.getDay();
+  var daysInMonth = last.getDate();
+  var unlocked = isMonthUnlocked(monthDate);
+
+  // Conta agendamentos por dia usando o histórico já carregado em memória
+  // (state.appts cobre o ano corrente inteiro), sem precisar de nova busca.
+  var apptCounts = {};
+  state.appts.forEach(function(a){
+    if(a.date.slice(0,7) === monthKeyStr(monthDate)){
+      apptCounts[a.date] = (apptCounts[a.date] || 0) + 1;
+    }
+  });
+
+  var cells = [];
+  for(var i = 0; i < startOffset; i++){ cells.push('<div class="cal-day cal-empty"></div>'); }
+  for(var day = 1; day <= daysInMonth; day++){
+    var d = new Date(monthDate.getFullYear(), monthDate.getMonth(), day);
+    var k = dateKey(d);
+    var override = state.scheduleOverrides[k];
+    var isPast = k < todayKey;
+    var isToday = k === todayKey;
+    var isDefaultWorkDay = state.config.workDays.indexOf(d.getDay()) !== -1;
+    var hasCustomPeriods = override && Array.isArray(override.periods) && override.periods.length;
+    var isClosed = override && override.closed;
+    var isOff = !isClosed && !isDefaultWorkDay && !hasCustomPeriods;
+    var count = apptCounts[k] || 0;
+    var classes = ["cal-day"];
+    if(isToday) classes.push("is-today");
+    if(isPast) classes.push("is-past");
+    if(isClosed) classes.push("is-closed");
+    else if(isOff) classes.push("is-off");
+    if(count > 0) classes.push("has-appts");
+    if(!unlocked && !isPast) classes.push("is-locked");
+    if(k === state.barberSelectedDay) classes.push("is-selected");
+    cells.push('<div class="'+classes.join(" ")+'" data-calday="'+k+'" role="button" tabindex="0">'+
+      '<span class="cal-num">'+day+'</span>'+
+      (count > 0 ? '<span class="cal-dot"></span>' : '')+
+    '</div>');
+  }
+
+  var unlockBoxHtml = "";
+  if(!unlocked){
+    unlockBoxHtml = '<div class="month-unlock-box">'+
+      'Esse mês ainda não está liberado para os clientes agendarem.'+
+      '<br><button class="ghost" data-unlockmonth type="button" style="margin-top:8px;">Liberar '+MONTH_NAMES[monthDate.getMonth()]+' para agendamento</button>'+
+    '</div>';
+  } else if(monthKeyStr(monthDate) !== monthKeyStr(nowSP())){
+    unlockBoxHtml = '<div class="month-unlock-box">'+
+      'Esse mês está liberado para agendamento.'+
+      '<br><button class="ghost" data-lockmonth type="button" style="margin-top:8px;">Bloquear esse mês de novo</button>'+
+    '</div>';
+  }
+
+  return '<div class="card">'+
+    '<h2>Calendário</h2>'+
+    '<p class="sub">Toque num dia pra ver os clientes marcados ou ajustar o horário só daquele dia.</p>'+
+    '<div class="cal-head">'+
+      '<div class="cal-nav"><button type="button" data-calprev aria-label="Mês anterior">&larr;</button></div>'+
+      '<div class="cal-title">'+MONTH_NAMES[monthDate.getMonth()]+' de '+monthDate.getFullYear()+'</div>'+
+      '<div class="cal-nav"><button type="button" data-calnext aria-label="Próximo mês">&rarr;</button></div>'+
+    '</div>'+
+    '<div class="cal-dow">'+DOW.map(function(n){ return '<span>'+n+'</span>'; }).join("")+'</div>'+
+    '<div class="cal-grid">'+cells.join("")+'</div>'+
+    '<div class="cal-legend">'+
+      '<span><span class="dot" style="background:var(--gold-dark);"></span> Tem agendamento</span>'+
+      '<span><span class="dot" style="background:var(--gray-300);"></span> Não atende</span>'+
+    '</div>'+
+    unlockBoxHtml+
+    renderDayEditorHtml()+
+  '</div>';
+}
+
+function renderDayEditorHtml(){
+  var k = state.barberSelectedDay;
+  var draft = state.barberDayDraft;
+  if(!k || !draft) return "";
+  var dateLabel = k.split("-").reverse().join("/");
+  var dayAppts = state.appts.filter(function(a){ return a.date === k; })
+    .sort(function(a,b){ return a.time.localeCompare(b.time); });
+  var apptsHtml = dayAppts.length
+    ? dayAppts.map(function(a){
+        return '<div class="day-appt-row">'+a.time+' &middot; '+escapeHtml(a.name)+' &middot; '+escapeHtml(a.serviceName)+(a.done ? ' &middot; realizado' : '')+'</div>';
+      }).join("")
+    : '<p class="sub" style="margin:6px 0 0;">Nenhum agendamento nesse dia.</p>';
+
+  var periodsHtml = draft.periods.map(function(p, i){
+    var removeBtn = draft.periods.length > 1
+      ? '<button class="danger" data-dayremoveperiod="'+i+'" type="button">Remover</button>'
+      : '';
+    return '<div class="grid2" data-day-period-row="'+i+'" style="align-items:end; margin-bottom:10px;">'+
+      '<div><label>Abre às (hora)</label><input type="text" data-day-period-field="startHour" value="'+p.startHour+'"></div>'+
+      '<div style="display:flex; gap:8px; align-items:end;">'+
+        '<div style="flex:1;"><label>Fecha às (hora)</label><input type="text" data-day-period-field="endHour" value="'+p.endHour+'"></div>'+
+        removeBtn+
+      '</div>'+
+    '</div>';
+  }).join("");
+
+  return '<div class="day-editor">'+
+    '<h2 style="font-size:15px; padding-bottom:0;">'+dateLabel+'</h2>'+
+    '<div style="margin:10px 0;">'+apptsHtml+'</div>'+
+    '<label style="display:flex; align-items:center; gap:8px; margin-top:6px;">'+
+      '<input type="checkbox" id="dayClosedChk" style="width:auto;" '+(draft.closed ? "checked" : "")+'>'+
+      ' Fechado nesse dia (sem atendimento)'+
+    '</label>'+
+    (draft.closed ? "" :
+      '<div id="dayPeriodsList" style="margin-top:10px;">'+periodsHtml+'</div>'+
+      '<button class="ghost" id="addDayPeriodBtn" type="button" style="margin:4px 0 14px;">+ Adicionar período</button>'
+    )+
+    '<div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:6px;">'+
+      '<button class="primary" id="saveDayBtn" type="button">Salvar horário desse dia</button>'+
+      (state.scheduleOverrides[k] ? '<button class="ghost" id="resetDayBtn" type="button">Restaurar horário padrão</button>' : '')+
+      '<button class="ghost" id="closeDayEditorBtn" type="button">Fechar</button>'+
+    '</div>'+
+    '<div id="daySaved" class="hint" role="status" aria-live="polite" style="display:none;"></div>'+
+  '</div>';
+}
+
+function wireBarberCalendarHandlers(el){
+  var prevBtn = el.querySelector("[data-calprev]");
+  if(prevBtn){
+    prevBtn.onclick = function(){
+      var m = state.barberCalendarMonth;
+      state.barberCalendarMonth = new Date(m.getFullYear(), m.getMonth()-1, 1);
+      state.barberSelectedDay = null;
+      state.barberDayDraft = null;
+      render();
+      ensureOverridesLoaded(state.barberCalendarMonth).then(render);
+    };
+  }
+  var nextBtn = el.querySelector("[data-calnext]");
+  if(nextBtn){
+    nextBtn.onclick = function(){
+      var m = state.barberCalendarMonth;
+      state.barberCalendarMonth = new Date(m.getFullYear(), m.getMonth()+1, 1);
+      state.barberSelectedDay = null;
+      state.barberDayDraft = null;
+      render();
+      ensureOverridesLoaded(state.barberCalendarMonth).then(render);
+    };
+  }
+
+  el.querySelectorAll("[data-calday]").forEach(function(cell){
+    makeActivatable(cell, function(){
+      var k = cell.getAttribute("data-calday");
+      if(state.barberSelectedDay === k){
+        state.barberSelectedDay = null;
+        state.barberDayDraft = null;
+      } else {
+        state.barberSelectedDay = k;
+        var existing = state.scheduleOverrides[k];
+        state.barberDayDraft = existing
+          ? {
+              closed: !!existing.closed,
+              periods: (existing.periods && existing.periods.length)
+                ? JSON.parse(JSON.stringify(existing.periods))
+                : JSON.parse(JSON.stringify(state.config.workPeriods))
+            }
+          : { closed: false, periods: JSON.parse(JSON.stringify(state.config.workPeriods)) };
+      }
+      render();
+    });
+  });
+
+  var unlockBtn = el.querySelector("[data-unlockmonth]");
+  if(unlockBtn){
+    unlockBtn.onclick = async function(){
+      var mk = monthKeyStr(state.barberCalendarMonth);
+      var previous = state.config.unlockedMonths.slice();
+      if(state.config.unlockedMonths.indexOf(mk) === -1) state.config.unlockedMonths.push(mk);
+      unlockBtn.disabled = true;
+      var ok = await saveConfig();
+      if(!ok){
+        state.config.unlockedMonths = previous;
+        showToast(saveErrorMessage(), true);
+        render();
+        return;
+      }
+      render();
+    };
+  }
+
+  var lockBtn = el.querySelector("[data-lockmonth]");
+  if(lockBtn){
+    lockBtn.onclick = async function(){
+      var mk = monthKeyStr(state.barberCalendarMonth);
+      var previous = state.config.unlockedMonths.slice();
+      var idx = state.config.unlockedMonths.indexOf(mk);
+      if(idx !== -1) state.config.unlockedMonths.splice(idx, 1);
+      lockBtn.disabled = true;
+      var ok = await saveConfig();
+      if(!ok){
+        state.config.unlockedMonths = previous;
+        showToast(saveErrorMessage(), true);
+        render();
+        return;
+      }
+      render();
+    };
+  }
+
+  var dayClosedChk = document.getElementById("dayClosedChk");
+  if(dayClosedChk){
+    dayClosedChk.onchange = function(){
+      state.barberDayDraft.closed = dayClosedChk.checked;
+      render();
+    };
+  }
+
+  var addDayPeriodBtn = document.getElementById("addDayPeriodBtn");
+  if(addDayPeriodBtn){
+    addDayPeriodBtn.onclick = function(){
+      if(state.barberDayDraft.periods.length >= 6){
+        showToast("Máximo de 6 períodos por dia.", true);
+        return;
+      }
+      var last = state.barberDayDraft.periods[state.barberDayDraft.periods.length - 1];
+      var suggestedStart = Math.min(last.endHour + 1, 22);
+      var suggestedEnd = Math.min(suggestedStart + 2, 23);
+      state.barberDayDraft.periods.push({startHour: suggestedStart, endHour: suggestedEnd});
+      render();
+    };
+  }
+
+  el.querySelectorAll("[data-dayremoveperiod]").forEach(function(btn){
+    btn.onclick = function(){
+      var idx = parseInt(btn.getAttribute("data-dayremoveperiod"), 10);
+      state.barberDayDraft.periods.splice(idx, 1);
+      render();
+    };
+  });
+
+  var saveDayBtn = document.getElementById("saveDayBtn");
+  if(saveDayBtn){
+    saveDayBtn.onclick = async function(){
+      var k = state.barberSelectedDay;
+      var draft = state.barberDayDraft;
+      var savedMsg = document.getElementById("daySaved");
+      var overrideToSave;
+      if(draft.closed){
+        overrideToSave = {closed: true, periods: []};
+      } else {
+        var rows = el.querySelectorAll("[data-day-period-row]");
+        var periods = [];
+        var invalid = false;
+        rows.forEach(function(row){
+          var sh = parseInt(row.querySelector('[data-day-period-field="startHour"]').value, 10);
+          var eh = parseInt(row.querySelector('[data-day-period-field="endHour"]').value, 10);
+          if(isNaN(sh) || isNaN(eh) || sh < 0 || sh > 23 || eh < 1 || eh > 24 || sh >= eh){ invalid = true; }
+          periods.push({startHour: sh, endHour: eh});
+        });
+        periods.sort(function(a,b){ return a.startHour - b.startHour; });
+        for(var i = 1; i < periods.length; i++){
+          if(periods[i].startHour < periods[i-1].endHour){ invalid = true; }
+        }
+        if(!periods.length || invalid){
+          savedMsg.textContent = "Confira os períodos desse dia (0-23h, sem se sobrepor).";
+          savedMsg.style.display = "block";
+          return;
+        }
+        overrideToSave = {closed: false, periods: periods};
+      }
+      saveDayBtn.disabled = true;
+      saveDayBtn.textContent = "Salvando...";
+      var ok = await saveDayOverride(k, overrideToSave);
+      if(!ok){
+        saveDayBtn.disabled = false;
+        saveDayBtn.textContent = "Salvar horário desse dia";
+        savedMsg.textContent = saveErrorMessage();
+        savedMsg.style.display = "block";
+        return;
+      }
+      state.barberDayDraft = overrideToSave;
+      render();
+    };
+  }
+
+  var resetDayBtn = document.getElementById("resetDayBtn");
+  if(resetDayBtn){
+    resetDayBtn.onclick = async function(){
+      var k = state.barberSelectedDay;
+      resetDayBtn.disabled = true;
+      var ok = await saveDayOverride(k, null);
+      if(!ok){
+        resetDayBtn.disabled = false;
+        showToast(saveErrorMessage(), true);
+        return;
+      }
+      state.barberDayDraft = {closed: false, periods: JSON.parse(JSON.stringify(state.config.workPeriods))};
+      render();
+    };
+  }
+
+  var closeDayEditorBtn = document.getElementById("closeDayEditorBtn");
+  if(closeDayEditorBtn){
+    closeDayEditorBtn.onclick = function(){
+      state.barberSelectedDay = null;
+      state.barberDayDraft = null;
+      render();
+    };
+  }
+}
+
+// ---------- CLIENTES CADASTRADOS (consulta do barbeiro) ----------
+
+function clientsListInnerHtml(){
+  var search = state.barberClientSearch.trim().toLowerCase();
+  var list = state.barberClients;
+  if(search){
+    list = list.filter(function(c){
+      return (c.name || "").toLowerCase().indexOf(search) !== -1 ||
+        (c.phone || "").toLowerCase().indexOf(search) !== -1 ||
+        (c.email || "").toLowerCase().indexOf(search) !== -1;
+    });
+  }
+  if(!list.length){
+    return '<p class="empty">'+(state.barberClientsLoaded ? "Nenhum cliente encontrado." : "Carregando...")+'</p>';
+  }
+  return list.map(function(c){
+    return '<div class="client-row">'+
+      '<div class="who">'+escapeHtml(c.name || "(sem nome)")+'</div>'+
+      '<div class="client-meta">'+escapeHtml(c.phone || "-")+' &middot; '+escapeHtml(c.email || "-")+'</div>'+
+    '</div>';
+  }).join("");
+}
+
+function renderBarberClientsCardHtml(){
+  var total = state.barberClients.length;
+  return '<div class="card">'+
+    '<div class="appts-head">'+
+      '<h2>Clientes cadastrados</h2>'+
+      '<button class="ghost" id="refreshClientsBtn" type="button">Atualizar</button>'+
+    '</div>'+
+    '<p class="sub">'+total+(total === 1 ? " cliente cadastrado" : " clientes cadastrados")+'</p>'+
+    '<input type="text" id="clientSearchInput" placeholder="Buscar por nome, telefone ou email" value="'+escapeHtml(state.barberClientSearch)+'" style="margin-bottom:10px;">'+
+    '<div id="clientsList">'+clientsListInnerHtml()+'</div>'+
+  '</div>';
+}
+
+function wireBarberClientsHandlers(el){
+  var searchInput = document.getElementById("clientSearchInput");
+  if(searchInput){
+    // Atualiza só a lista (não a página inteira) pra não perder o foco nem
+    // a posição do cursor a cada letra digitada.
+    searchInput.addEventListener("input", function(){
+      state.barberClientSearch = searchInput.value;
+      var listEl = document.getElementById("clientsList");
+      if(listEl) listEl.innerHTML = clientsListInnerHtml();
+    });
+  }
+  var refreshBtn = document.getElementById("refreshClientsBtn");
+  if(refreshBtn){
+    refreshBtn.onclick = async function(){
+      refreshBtn.disabled = true;
+      refreshBtn.textContent = "Atualizando...";
+      var ok = await refreshClients();
+      if(!ok){ showToast(saveErrorMessage(), true); }
+      render();
+    };
+  }
+}
 
 function renderBarberApp(el){
   var now = nowSP();
@@ -1907,6 +2500,8 @@ function renderBarberApp(el){
       nextHtml+
       apptsHtml+
     '</div>'+
+    renderBarberCalendarCardHtml()+
+    renderBarberClientsCardHtml()+
     '<div class="card">'+
       '<h2>Configurações</h2>'+
       '<p class="sub">Dias e horários de atendimento</p>'+
@@ -1934,6 +2529,8 @@ function renderBarberApp(el){
 
   attachPhoneMask(document.getElementById("barberWhatsapp"));
   wireBugReportHandlers("barber", "barbeiro");
+  wireBarberCalendarHandlers(el);
+  wireBarberClientsHandlers(el);
 
   var logoutHandler = async function(){
     try{ await signOut(auth); }catch(e){}
