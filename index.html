@@ -336,6 +336,46 @@
   }
   .appt .who{font-weight:600; font-size:14px;}
   .appt .when{font-size:13px; color:var(--gray-500);}
+  .next-appt{
+    border:1px solid var(--gold-dark);
+    background:var(--gold-soft);
+    border-radius:8px;
+    padding:12px 14px;
+    margin-bottom:16px;
+  }
+  .next-appt-label{
+    font-size:11px;
+    font-weight:700;
+    text-transform:uppercase;
+    letter-spacing:0.08em;
+    color:var(--gold-dark);
+    margin-bottom:4px;
+  }
+  .next-appt-body{
+    display:flex;
+    justify-content:space-between;
+    align-items:baseline;
+    gap:10px;
+    flex-wrap:wrap;
+    font-size:14px;
+  }
+  .next-appt-when{
+    font-size:13px;
+    font-weight:700;
+    color:var(--black);
+    white-space:nowrap;
+  }
+  .appt-day-group{ margin-bottom:4px; }
+  .appt-day-header{
+    font-size:12px;
+    font-weight:700;
+    text-transform:uppercase;
+    letter-spacing:0.06em;
+    color:var(--gray-500);
+    margin:16px 0 8px;
+  }
+  .appt-day-group:first-child .appt-day-header{ margin-top:0; }
+  .appt-day-header.is-overdue{ color:var(--barber-red); }
   .empty{
     color:var(--gray-500);
     font-size:13px;
@@ -939,16 +979,24 @@ async function setApptDoneDoc(id, doneVal){
   catch(e){ return false; }
 }
 
-// Pulls the latest appointments from Firestore. Needed because each
-// person (client or barber) has their own in-memory copy of state — if a
-// client books on their phone, the barber's screen doesn't know about it
-// until it re-reads. Used on login, on manual refresh, and by the
-// background poll below. Loads o histórico inteiro (não só os futuros)
-// porque o painel de desempenho do barbeiro precisa dos concluídos
-// passados pra calcular saldo da semana/mês/ano.
+// Pulls appointments from Firestore. Needed because each person (client or
+// barber) has their own in-memory copy of state — if a client books on
+// their phone, the barber's screen doesn't know about it until it re-reads.
+// Used on login, on manual refresh, and by the background poll below.
+//
+// Scoped to the current year onward (not the whole collection): the
+// performance panel only ever needs this year's data (saldo semanal,
+// mensal e anual), and this runs on a 12s poll while the barber panel is
+// open, so pulling every historical appointment ever made would mean the
+// read cost — and the payload — keeps growing forever as the shop's
+// history piles up. A pending appointment from a previous year that never
+// got marked "Realizado" won't show up in the overdue list, but that's an
+// edge case worth trading for keeping every regular poll cheap and fast.
 async function refreshAppts(){
   try{
-    var snap = await getDocs(collection(db, "appointments"));
+    var yearStart = dateKey(new Date(nowSP().getFullYear(), 0, 1));
+    var q = query(collection(db, "appointments"), where("date", ">=", yearStart));
+    var snap = await getDocs(q);
     var list = [];
     snap.forEach(function(d){ list.push(Object.assign({id: d.id}, d.data())); });
     list.sort(function(a,b){ return (a.date+a.time).localeCompare(b.date+b.time); });
@@ -1075,6 +1123,39 @@ function startOfWeek(d){
 
 function isCompletedAppt(a, now){
   return a.done === true;
+}
+
+// An appointment is "overdue" when its slot has already passed and nobody
+// marked it done or cancelled it — the barber forgot, or the client was a
+// no-show. These get called out separately in the panel instead of quietly
+// blending into the schedule, since a no-show or forgotten confirmation is
+// exactly the kind of thing a busy barber can lose track of.
+function isOverdueAppt(a, now){
+  if(a.done) return false;
+  var dt = new Date(a.date + "T" + a.time + ":00");
+  return dt.getTime() < now.getTime();
+}
+
+function dayHeaderLabel(dstr, todayKey, tomorrowKey){
+  if(dstr === todayKey) return "Hoje";
+  if(dstr === tomorrowKey) return "Amanhã";
+  var parts = dstr.split("-").map(function(n){ return parseInt(n, 10); });
+  var d = new Date(parts[0], parts[1] - 1, parts[2]);
+  return DOW[d.getDay()] + ", " + dstr.split("-").reverse().slice(0, 2).join("/");
+}
+
+// "em 25 min" / "em 2h 10min" for later today, or "Amanhã às 09:00" /
+// "Ter, 02/09 às 09:00" for anything past today.
+function timeUntilLabel(a, now, todayKey, tomorrowKey){
+  var dt = new Date(a.date + "T" + a.time + ":00");
+  if(a.date !== todayKey){
+    return dayHeaderLabel(a.date, todayKey, tomorrowKey) + " às " + a.time;
+  }
+  var diffMin = Math.round((dt.getTime() - now.getTime()) / 60000);
+  if(diffMin <= 0) return "agora";
+  if(diffMin < 60) return "em " + diffMin + " min";
+  var h = Math.floor(diffMin / 60), m = diffMin % 60;
+  return "em " + h + "h" + (m ? " " + m + "min" : "");
 }
 
 function formatBRL(n){
@@ -1702,24 +1783,72 @@ function renderBarberAuth(el){
 // ---------- BARBER APP ----------
 
 function renderBarberApp(el){
-  var todayKey = dateKey(nowSP());
+  var now = nowSP();
+  var todayKey = dateKey(now);
+  var tomorrowDate = new Date(now); tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+  var tomorrowKey = dateKey(tomorrowDate);
+
   var upcoming = state.appts
     .filter(function(a){ return a.date >= todayKey || !a.done; })
     .sort(function(a,b){ return (a.date+a.time).localeCompare(b.date+b.time); });
 
-  var apptsHtml = '<p class="empty">Nenhum agendamento por enquanto.</p>';
-  if(upcoming.length){
-    apptsHtml = upcoming.map(function(a){
-      var dur = a.minutes || state.config.slotMinutes;
-      var actionsHtml = a.done
-        ? '<span class="done-badge">&#10003; Realizado</span><button class="ghost" data-undone="'+a.id+'">Desfazer</button>'
-        : '<button class="success" data-done="'+a.id+'">Realizado</button><button class="danger" data-cancel="'+a.id+'">Cancelar</button>';
-      return '<div class="appt'+(a.done ? ' done' : '')+'">'+
-        '<div>'+
-          '<div class="who">'+escapeHtml(a.name)+' · '+escapeHtml(a.serviceName)+' ('+dur+' min)</div>'+
-          '<div class="when">'+a.date.split("-").reverse().join("/")+' às '+a.time+' · '+escapeHtml(a.phone)+'</div>'+
+  // Group into day buckets (list is already sorted, so same-date items are
+  // always consecutive) — makes a long schedule scannable at a glance
+  // instead of one flat list mixing today, tomorrow and next week together.
+  var groups = [];
+  upcoming.forEach(function(a){
+    var last = groups[groups.length - 1];
+    if(!last || last.date !== a.date){ groups.push({date: a.date, items: [a]}); }
+    else { last.items.push(a); }
+  });
+
+  var todayCount = 0, overdueCount = 0;
+  groups.forEach(function(g){
+    if(g.date === todayKey) todayCount += g.items.length;
+    else if(g.date < todayKey) overdueCount += g.items.length;
+  });
+
+  // The next thing the barber needs to actually do — first appointment
+  // (today or later) that isn't done and hasn't already passed.
+  var nextAppt = null;
+  for(var i = 0; i < upcoming.length; i++){
+    var cand = upcoming[i];
+    if(cand.done) continue;
+    if(new Date(cand.date + "T" + cand.time + ":00").getTime() >= now.getTime()){ nextAppt = cand; break; }
+  }
+  var nextHtml = "";
+  if(nextAppt){
+    nextHtml =
+      '<div class="next-appt">'+
+        '<div class="next-appt-label">Próximo atendimento</div>'+
+        '<div class="next-appt-body">'+
+          '<div><strong>'+escapeHtml(nextAppt.name)+'</strong> · '+escapeHtml(nextAppt.serviceName)+'</div>'+
+          '<div class="next-appt-when">'+timeUntilLabel(nextAppt, now, todayKey, tomorrowKey)+'</div>'+
         '</div>'+
-        '<div class="appt-actions">'+actionsHtml+'</div>'+
+      '</div>';
+  }
+
+  var apptsHtml = '<p class="empty">Nenhum agendamento por enquanto.</p>';
+  if(groups.length){
+    apptsHtml = groups.map(function(g){
+      var overdue = g.date < todayKey;
+      var label = (overdue ? "Atrasado · " : "") + dayHeaderLabel(g.date, todayKey, tomorrowKey);
+      var rows = g.items.map(function(a){
+        var dur = a.minutes || state.config.slotMinutes;
+        var actionsHtml = a.done
+          ? '<span class="done-badge">&#10003; Realizado</span><button class="ghost" data-undone="'+a.id+'">Desfazer</button>'
+          : '<button class="success" data-done="'+a.id+'">Realizado</button><button class="danger" data-cancel="'+a.id+'">Cancelar</button>';
+        return '<div class="appt'+(a.done ? ' done' : '')+'">'+
+          '<div>'+
+            '<div class="who">'+escapeHtml(a.name)+' · '+escapeHtml(a.serviceName)+' ('+dur+' min)</div>'+
+            '<div class="when">às '+a.time+' · '+escapeHtml(a.phone)+'</div>'+
+          '</div>'+
+          '<div class="appt-actions">'+actionsHtml+'</div>'+
+        '</div>';
+      }).join("");
+      return '<div class="appt-day-group">'+
+        '<div class="appt-day-header'+(overdue ? ' is-overdue' : '')+'">'+label+'</div>'+
+        rows+
       '</div>';
     }).join("");
   }
@@ -1763,6 +1892,9 @@ function renderBarberApp(el){
       '</div>'+
     '</div>';
 
+  var apptsSubtitleBits = [todayCount + (todayCount === 1 ? " agendamento hoje" : " agendamentos hoje")];
+  if(overdueCount) apptsSubtitleBits.push(overdueCount + (overdueCount === 1 ? " pendente de dia anterior" : " pendentes de dias anteriores"));
+
   el.innerHTML =
     '<span class="backlink" id="logoutBarber">&larr; sair do painel</span>'+
     statsHtml+
@@ -1771,7 +1903,8 @@ function renderBarberApp(el){
         '<h2>Agendamentos</h2>'+
         '<button class="ghost" id="refreshApptsBtn">Atualizar</button>'+
       '</div>'+
-      '<p class="sub">Painel só visível pra você.</p>'+
+      '<p class="sub">'+apptsSubtitleBits.join(" · ")+'</p>'+
+      nextHtml+
       apptsHtml+
     '</div>'+
     '<div class="card">'+
