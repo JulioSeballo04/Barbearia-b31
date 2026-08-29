@@ -16,6 +16,7 @@
     --line:#DADADA;
     --gold:#C9A227;
     --gold-dark:#9C7D1F;
+    --gold-text:#7A6018; /* variante mais escura, só pra texto — --gold-dark falha contraste WCAG AA (3.9:1) em texto pequeno, mesmo passando bem como borda/detalhe */
     --gold-soft:#F1E4B8;
     --page-bg:#F5F4F1;
     --barber-red:#C1272D;
@@ -348,7 +349,7 @@
     font-weight:700;
     text-transform:uppercase;
     letter-spacing:0.08em;
-    color:var(--gold-dark);
+    color:var(--gold-text);
     margin-bottom:4px;
   }
   .next-appt-body{
@@ -530,7 +531,7 @@
     color:var(--gray-500);
     cursor:pointer;
   }
-  .backlink:hover{ color:var(--gold-dark); }
+  .backlink:hover{ color:var(--gold-text); }
   .authtabs{
     display:flex;
     gap:8px;
@@ -1030,7 +1031,7 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
 import {
-  getAuth, GoogleAuthProvider, signInWithPopup, signInAnonymously,
+  getAuth, GoogleAuthProvider, signInWithPopup,
   signOut, onAuthStateChanged, deleteUser
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
 import {
@@ -1087,6 +1088,17 @@ var MONTH_NAMES = ["janeiro","fevereiro","março","abril","maio","junho","julho"
 // firestore.rules) — só o hash dele. Isso é o valor usado quando um
 // projeto novo ainda não tem nenhum PIN configurado.
 var DEFAULT_PIN = "1234";
+
+// ATENÇÃO — TROCAR ANTES DE PUBLICAR: e-mail da conta Google usada pelo
+// barbeiro pra acessar o painel. Precisa ser IDÊNTICO ao valor usado na
+// função isBarberSession() de firestore.rules — são as duas metades da
+// mesma trava. Sem essa troca, ninguém consegue logar como barbeiro.
+var BARBER_EMAIL = "TROQUE-PELO-EMAIL-DO-BARBEIRO@gmail.com";
+
+function isCurrentUserTheBarber(){
+  return !!(auth.currentUser && auth.currentUser.email === BARBER_EMAIL &&
+    auth.currentUser.providerData.some(function(p){ return p.providerId === "google.com"; }));
+}
 
 // ---------- HASH DO PIN (nunca guardamos o PIN em texto puro) ----------
 function randomHex(byteLen){
@@ -1175,6 +1187,7 @@ var state = {
   barberClientSearch: "",
   barberBugOpen: false,      // se o formulário de reportar problema está expandido, no painel do barbeiro
   barberTab: "hoje",         // hoje | calendario | clientes | ajustes — abas do painel do barbeiro
+  barberLastActivity: null,  // timestamp do último clique/tecla no painel, pra deslogar por inatividade
   showPrivacyModal: false,   // modal da política de privacidade, acessível de qualquer tela
   showDeleteAccountModal: false, // modal de confirmação de "excluir meus dados", só na tela do cliente
   deletingAccount: false     // true enquanto a exclusão está em andamento (evita cliques duplicados)
@@ -1842,6 +1855,8 @@ function privacyPolicyHtml(){
     '<p>Não vendemos nem compartilhamos seus dados com terceiros pra fins de marketing. Os dados ficam guardados no Firebase (Google Cloud), usado só pelo funcionamento deste aplicativo.</p>'+
     '<h3>Por quanto tempo guardamos</h3>'+
     '<p>Enquanto sua conta existir no aplicativo, ou até você pedir a exclusão. Ao excluir, seus agendamentos futuros são cancelados e seu perfil (nome, telefone, conta de login) é apagado por completo. Os cortes já realizados ficam registrados de forma anônima (só data, serviço e valor), sem nenhum vínculo com você, apenas pra controle financeiro do negócio.</p>'+
+    '<h3>Uso por menores de idade</h3>'+
+    '<p>Este aplicativo é destinado a maiores de 18 anos. Se um responsável quiser agendar um horário para um menor de idade, o agendamento deve ser feito na conta do próprio responsável.</p>'+
     '<h3>Seus direitos</h3>'+
     '<p>Você pode pedir, a qualquer momento, pra ver, corrigir ou excluir os dados guardados sobre você. Seu nome pode ser editado direto na tela principal do aplicativo, e a exclusão completa dos seus dados está disponível no link "Excluir meus dados". Pra qualquer outra dúvida, use o link "Encontrou um problema?" dentro do aplicativo.</p>';
 }
@@ -2600,14 +2615,13 @@ function renderClientApp(el){
 
   var selectedSvc = services.find(function(s){ return s.id === state.clientSelectedService; });
 
-  // Resumo compacto do que já foi escolhido, mostrado logo acima do botão
-  // de confirmar — sem isso, o cliente teria que rolar a tela toda pra
-  // cima de novo pra conferir serviço/dia/horário antes de confirmar.
+  // Resumo antes do botão de confirmar. Serviço e dia/horário já aparecem
+  // nos resumos colapsados das etapas 1 e 2 logo acima, então repeti-los
+  // aqui de novo só duplicava informação sem ajudar — a única coisa que
+  // ainda não tinha aparecido em lugar nenhum era o valor.
   var summaryHtml = "";
   if(selectedSvc && state.clientSelectedDate && state.clientSelectedSlot){
     summaryHtml = '<div class="booking-summary">'+
-      '<div><span class="label">Serviço</span><span class="value">'+escapeHtml(selectedSvc.name)+'</span></div>'+
-      '<div><span class="label">Quando</span><span class="value">'+formatDateLabel(state.clientSelectedDate)+' às '+state.clientSelectedSlot+'</span></div>'+
       '<div><span class="label">Valor</span><span class="value">R$ '+selectedSvc.price+'</span></div>'+
     '</div>';
   }
@@ -2805,13 +2819,83 @@ async function doClientLogout(){
 
 // ---------- BARBER AUTH ----------
 
+// Desloga de verdade (encerra a sessão Google) pra forçar reautenticação
+// completa no próximo acesso, e não só o PIN de conveniência — consistente
+// com o resto do app, que nunca restaura sessão de barbeiro sozinho.
+async function doBarberLogout(){
+  try{ await signOut(auth); }catch(e){}
+  state.barberLoggedIn = false;
+  state.barberTab = "hoje";
+  state.barberBugOpen = false;
+  state.barberLastActivity = null;
+  state.screen = "landing";
+  render();
+}
+
 function renderBarberAuth(el){
+  var backHandler2 = function(){ state.screen = "landing"; render(); };
+
+  if(!isCurrentUserTheBarber()){
+    // Etapa 1 — identidade real, verificada pelo próprio Google e conferida
+    // pela regra do Firestore (isBarberSession agora exige esse e-mail
+    // específico, não só "qualquer sessão anônima"). Isso é o que corrige a
+    // falha em que qualquer visitante conseguia criar uma sessão anônima
+    // por fora do app e ganhar permissão de barbeiro sem PIN nenhum.
+    el.innerHTML =
+      '<span class="backlink" id="backLink">&larr; voltar</span>'+
+      renderAuthLogo()+
+      '<div class="card">'+
+        '<h2>Acesso do barbeiro</h2>'+
+        '<p class="sub">Área restrita — entre com a conta Google cadastrada como barbeiro.</p>'+
+        '<div id="barberGoogleError" class="error" role="alert" aria-live="polite" style="display:none;"></div>'+
+        '<button class="primary" id="barberGoogleBtn">Entrar com Google</button>'+
+      '</div>';
+    document.getElementById("backLink").setAttribute("tabindex", "0");
+    document.getElementById("backLink").setAttribute("role", "button");
+    document.getElementById("backLink").onclick = backHandler2;
+    document.getElementById("backLink").onkeydown = function(ev){
+      if(ev.key === "Enter" || ev.key === " "){ ev.preventDefault(); backHandler2(); }
+    };
+    document.getElementById("barberGoogleBtn").onclick = async function(){
+      var errBox = document.getElementById("barberGoogleError");
+      var btn = document.getElementById("barberGoogleBtn");
+      errBox.style.display = "none";
+      btn.disabled = true;
+      btn.textContent = "Abrindo o Google...";
+      try{
+        var result = await signInWithPopup(auth, googleProvider);
+        if(result.user.email !== BARBER_EMAIL){
+          // Conta errada: desloga na hora, pra não deixar uma sessão Google
+          // válida (mas não autorizada) pendurada no navegador.
+          try{ await signOut(auth); }catch(e){}
+          btn.disabled = false;
+          btn.textContent = "Entrar com Google";
+          errBox.textContent = "Essa conta não tem acesso ao painel do barbeiro.";
+          errBox.style.display = "block";
+          return;
+        }
+        render(); // agora isCurrentUserTheBarber() é true — recai na etapa do PIN
+      }catch(e){
+        btn.disabled = false;
+        btn.textContent = "Entrar com Google";
+        if(e && e.code === "auth/popup-closed-by-user") return;
+        errBox.textContent = "Não foi possível entrar com o Google. Tente novamente.";
+        errBox.style.display = "block";
+      }
+    };
+    return;
+  }
+
+  // Etapa 2 — já reconhecido pelo Google como o barbeiro; o PIN aqui é só
+  // uma trava rápida de conveniência neste aparelho (ex: reabrir o painel
+  // sem repetir o login do Google toda hora). A segurança de verdade já
+  // foi garantida antes desta tela.
   el.innerHTML =
     '<span class="backlink" id="backLink">&larr; voltar</span>'+
     renderAuthLogo()+
     '<div class="card">'+
       '<h2>Acesso do barbeiro</h2>'+
-      '<p class="sub">Área restrita — só você vê os agendamentos aqui.</p>'+
+      '<p class="sub">Conectado como '+escapeHtml(auth.currentUser.email)+'. Confirme o PIN pra abrir o painel.</p>'+
       '<label for="pinInput">PIN de acesso</label>'+
       '<div class="pin-field-wrap">'+
         '<input type="password" id="pinInput" placeholder="****" inputmode="numeric" autocomplete="off">'+
@@ -2820,7 +2904,6 @@ function renderBarberAuth(el){
       '<div id="pinError" class="error" role="alert" aria-live="polite" style="display:none;">PIN incorreto.</div>'+
       '<button class="primary" id="pinBtn">Entrar</button>'+
     '</div>';
-  var backHandler2 = function(){ state.screen = "landing"; render(); };
   document.getElementById("backLink").setAttribute("tabindex", "0");
   document.getElementById("backLink").setAttribute("role", "button");
   document.getElementById("backLink").onclick = backHandler2;
@@ -2848,10 +2931,6 @@ function renderBarberAuth(el){
     btn.disabled = true;
     btn.textContent = "Verificando...";
     try{
-      // Sessão anônima só pra satisfazer as regras do Firestore (que
-      // exigem um usuário autenticado pra ler/escrever barberSecrets). A
-      // trava real é a comparação do hash abaixo, feita depois da leitura.
-      if(!auth.currentUser){ await signInAnonymously(auth); }
       var secretsSnap = await getDoc(doc(db, "barberSecrets", "main"));
       var pinHash, pinSalt, pinAlgo;
       if(secretsSnap.exists()){
@@ -2896,6 +2975,7 @@ function renderBarberAuth(el){
       if(matched){
         state.barberLoggedIn = true;
         state.screen = "barberApp";
+        state.barberLastActivity = Date.now();
         render();
         refreshAppts().then(render);
         refreshClients().then(render);
@@ -3500,14 +3580,7 @@ function renderBarberApp(el){
     };
   });
 
-  var logoutHandler = async function(){
-    try{ await signOut(auth); }catch(e){}
-    state.barberLoggedIn = false;
-    state.barberTab = "hoje";
-    state.barberBugOpen = false;
-    state.screen = "landing";
-    render();
-  };
+  var logoutHandler = doBarberLogout;
   var logoutBtn = document.getElementById("logoutBarber");
   logoutBtn.setAttribute("tabindex", "0");
   logoutBtn.setAttribute("role", "button");
@@ -3793,8 +3866,9 @@ async function init(){
 
   // Restaura a sessão do cliente se o navegador ainda tiver um login
   // Google válido (Firebase mantém isso entre recarregamentos de página).
-  // Sessão do barbeiro (anônima) nunca é restaurada automaticamente —
-  // ele sempre precisa digitar o PIN de novo, que é a trava real.
+  // O painel do barbeiro nunca abre sozinho nesse restore, mesmo que a
+  // mesma conta Google do barbeiro esteja logada — ele sempre passa de
+  // novo pela tela de acesso (Google + PIN), que é a trava real.
   var restoreResolved = false;
   onAuthStateChanged(auth, async function(user){
     if(restoreResolved) return; // só usa a primeira notificação, na carga inicial
@@ -3815,12 +3889,25 @@ async function init(){
 
   render();
 
+  // Desloga o painel do barbeiro sozinho depois de um tempo sem nenhum
+  // clique/tecla — útil se o aparelho ficar esquecido aberto num balcão.
+  var BARBER_INACTIVITY_LIMIT_MS = 30 * 60 * 1000; // 30 minutos
+  ["click", "keydown"].forEach(function(evt){
+    document.addEventListener(evt, function(){
+      if(state.screen === "barberApp") state.barberLastActivity = Date.now();
+    });
+  });
+
   // While the barber panel is open, quietly re-check storage for new
   // bookings every few seconds so the barber doesn't have to manually
   // refresh or reopen the page to see appointments made elsewhere.
   // Skipped while a form field is focused so it never interrupts typing.
   setInterval(async function(){
     if(state.screen !== "barberApp") return;
+    if(state.barberLastActivity && (Date.now() - state.barberLastActivity) > BARBER_INACTIVITY_LIMIT_MS){
+      await doBarberLogout();
+      return;
+    }
     var active = document.activeElement;
     var isTyping = active && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName);
     if(isTyping) return;
