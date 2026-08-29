@@ -566,6 +566,17 @@
   .session-bar-sub .backlink{ font-size:13px; }
   .session-bar-sub-edit{ margin-bottom:10px; }
 
+  /* Campo de PIN com o link de "mostrar" ao lado, na tela de login do
+     barbeiro (em Ajustes, o toggle fica abaixo dos dois campos, então não
+     precisa desse wrapper). */
+  .pin-field-wrap{
+    display:flex;
+    align-items:center;
+    gap:10px;
+  }
+  .pin-field-wrap input{ flex:1; }
+  .pin-field-wrap .backlink{ white-space:nowrap; font-size:13px; }
+
   /* Auth logo */
   .auth-logo{
     text-align:center;
@@ -1376,6 +1387,23 @@ function attachPhoneMask(inputEl){
     inputEl.value = formatPhoneInput(inputEl.value);
     var after = inputEl.value.length;
     var newPos = Math.max(0, pos + (after - before));
+    try{ inputEl.setSelectionRange(newPos, newPos); }catch(e){}
+  });
+}
+
+// PIN de acesso é sempre numérico — barra letra/símbolo na hora de digitar
+// (em vez de só validar depois de enviar), tanto pro campo de login quanto
+// pro campo de trocar o PIN em Ajustes.
+function attachDigitsOnly(inputEl){
+  if(!inputEl) return;
+  inputEl.setAttribute("inputmode", "numeric");
+  inputEl.setAttribute("pattern", "[0-9]*");
+  inputEl.addEventListener("input", function(){
+    var pos = inputEl.selectionStart;
+    var before = inputEl.value.length;
+    inputEl.value = inputEl.value.replace(/\D/g, "");
+    var after = inputEl.value.length;
+    var newPos = Math.max(0, pos - (before - after));
     try{ inputEl.setSelectionRange(newPos, newPos); }catch(e){}
   });
 }
@@ -2785,7 +2813,10 @@ function renderBarberAuth(el){
       '<h2>Acesso do barbeiro</h2>'+
       '<p class="sub">Área restrita — só você vê os agendamentos aqui.</p>'+
       '<label for="pinInput">PIN de acesso</label>'+
-      '<input type="password" id="pinInput" placeholder="****" inputmode="numeric" autocomplete="off">'+
+      '<div class="pin-field-wrap">'+
+        '<input type="password" id="pinInput" placeholder="****" inputmode="numeric" autocomplete="off">'+
+        '<span class="backlink" id="togglePinVisibility">mostrar</span>'+
+      '</div>'+
       '<div id="pinError" class="error" role="alert" aria-live="polite" style="display:none;">PIN incorreto.</div>'+
       '<button class="primary" id="pinBtn">Entrar</button>'+
     '</div>';
@@ -2797,6 +2828,13 @@ function renderBarberAuth(el){
     if(ev.key === "Enter" || ev.key === " "){ ev.preventDefault(); backHandler2(); }
   };
   var pinInput = document.getElementById("pinInput");
+  attachDigitsOnly(pinInput);
+  var togglePinBtn = document.getElementById("togglePinVisibility");
+  makeActivatable(togglePinBtn, function(){
+    var showing = pinInput.type === "text";
+    pinInput.type = showing ? "password" : "text";
+    togglePinBtn.textContent = showing ? "mostrar" : "ocultar";
+  });
   async function tryPin(){
     var val = pinInput.value.trim();
     var errBox = document.getElementById("pinError");
@@ -3399,6 +3437,9 @@ function renderBarberApp(el){
       '<input type="text" id="slotMin" value="'+state.config.slotMinutes+'">'+
       '<label for="newPin">Trocar PIN de acesso</label>'+
       '<input type="password" id="newPin" placeholder="Deixe em branco pra manter o PIN atual" value="" autocomplete="new-password">'+
+      '<label for="confirmNewPin">Confirmar novo PIN</label>'+
+      '<input type="password" id="confirmNewPin" placeholder="Repita o novo PIN" value="" autocomplete="new-password">'+
+      '<p class="sub" style="margin:2px 0 12px;"><span class="backlink" id="toggleNewPinVisibility">mostrar PIN</span></p>'+
       '<label for="barberWhatsapp">WhatsApp para receber confirmações e cancelamentos</label>'+
       '<input type="tel" id="barberWhatsapp" placeholder="(11) 91234-5678" value="'+escapeHtml(state.config.whatsapp || "")+'">'+
       '<button class="primary" id="saveCfgBtn">Salvar configurações</button>'+
@@ -3434,6 +3475,20 @@ function renderBarberApp(el){
     tabContent;
 
   attachPhoneMask(document.getElementById("barberWhatsapp"));
+  attachDigitsOnly(document.getElementById("newPin"));
+  attachDigitsOnly(document.getElementById("confirmNewPin"));
+  var toggleNewPinBtn = document.getElementById("toggleNewPinVisibility");
+  if(toggleNewPinBtn){
+    makeActivatable(toggleNewPinBtn, function(){
+      var newPinInput = document.getElementById("newPin");
+      var confirmPinInput = document.getElementById("confirmNewPin");
+      var showing = newPinInput.type === "text";
+      var newType = showing ? "password" : "text";
+      newPinInput.type = newType;
+      if(confirmPinInput) confirmPinInput.type = newType;
+      toggleNewPinBtn.textContent = showing ? "mostrar PIN" : "ocultar PIN";
+    });
+  }
   wireBugReportHandlers("barber", "barbeiro");
   wireBarberCalendarHandlers(el);
   wireBarberClientsHandlers(el);
@@ -3590,6 +3645,7 @@ function renderBarberApp(el){
       }
       var sm = parseInt(document.getElementById("slotMin").value, 10);
       var newPin = document.getElementById("newPin").value.trim().slice(0, 12);
+      var confirmNewPin = document.getElementById("confirmNewPin").value.trim().slice(0, 12);
       var whatsapp = document.getElementById("barberWhatsapp").value.trim();
       var saved = document.getElementById("cfgSaved");
       if(!periods.length || periodsInvalid){
@@ -3606,6 +3662,11 @@ function renderBarberApp(el){
       // branco significa "não quero trocar o PIN agora".
       if(newPin && newPin.length < 6){
         saved.textContent = "O novo PIN precisa ter pelo menos 6 caracteres.";
+        saved.style.display = "block";
+        return;
+      }
+      if(newPin && newPin !== confirmNewPin){
+        saved.textContent = "O PIN e a confirmação não são iguais.";
         saved.style.display = "block";
         return;
       }
@@ -3638,6 +3699,7 @@ function renderBarberApp(el){
           var newHash = await hashPin(newPin, newSalt);
           await setDoc(doc(db, "barberSecrets", "main"), { pinHash: newHash, pinSalt: newSalt, pinAlgo: PIN_HASH_ALGO });
           document.getElementById("newPin").value = "";
+          document.getElementById("confirmNewPin").value = "";
         }catch(e){
           saved.textContent = "Configurações salvas, mas não foi possível trocar o PIN agora. Tente de novo.";
           saved.style.display = "block";
