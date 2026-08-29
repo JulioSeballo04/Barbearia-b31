@@ -558,6 +558,13 @@
     margin-bottom:6px;
   }
   .session-bar .who{font-size:13px; color:var(--gray-500);}
+  .session-bar-sub{
+    font-size:13px;
+    color:var(--gray-500);
+    margin-bottom:10px;
+  }
+  .session-bar-sub .backlink{ font-size:13px; }
+  .session-bar-sub-edit{ margin-bottom:10px; }
 
   /* Auth logo */
   .auth-logo{
@@ -1138,6 +1145,7 @@ var state = {
   pendingGoogleUser: null, // usuário Google logado que ainda precisa informar telefone
   clientSession: null, // {uid, name, phone, email}
   clientEditingName: false,
+  clientEditingPhone: false,
   clientSelectedService: null,
   clientSelectedDate: null,
   clientCalendarMonth: null, // primeiro dia do mês mostrado no calendário do cliente
@@ -1785,12 +1793,8 @@ function wirePrivacyLink(el){
 
 // Texto simples e direto (LGPD), pensado pro porte do negócio: sem termos
 // jurídicos que ninguém lê, dizendo com clareza quais dados são guardados,
-// pra quê, e como pedir a exclusão. O WhatsApp cadastrado pelo barbeiro em
-// "Ajustes" é reaproveitado aqui como canal de contato.
+// pra quê, e como pedir a exclusão.
 function privacyPolicyHtml(){
-  var contato = state.config && state.config.whatsapp
-    ? "pelo WhatsApp " + state.config.whatsapp
-    : "pelo WhatsApp informado no aplicativo";
   return '<p>Última atualização: '+MONTH_NAMES[nowSP().getMonth()]+' de '+nowSP().getFullYear()+'.</p>'+
     '<h3>Quem trata os seus dados</h3>'+
     '<p>Este aplicativo é usado pela Barbearia B31, em Bragança Paulista/SP, pra organizar os agendamentos dos próprios clientes.</p>'+
@@ -1811,7 +1815,7 @@ function privacyPolicyHtml(){
     '<h3>Por quanto tempo guardamos</h3>'+
     '<p>Enquanto sua conta existir no aplicativo, ou até você pedir a exclusão. Ao excluir, seus agendamentos futuros são cancelados e seu perfil (nome, telefone, conta de login) é apagado por completo. Os cortes já realizados ficam registrados de forma anônima (só data, serviço e valor), sem nenhum vínculo com você, apenas pra controle financeiro do negócio.</p>'+
     '<h3>Seus direitos</h3>'+
-    '<p>Você pode pedir, a qualquer momento, pra ver, corrigir ou excluir os dados guardados sobre você. Seu nome pode ser editado direto na tela principal do aplicativo, e a exclusão completa dos seus dados está disponível no link "Excluir meus dados". Pra qualquer outra dúvida, é só entrar em contato '+contato+' ou usar o link "Encontrou um problema?" dentro do aplicativo.</p>';
+    '<p>Você pode pedir, a qualquer momento, pra ver, corrigir ou excluir os dados guardados sobre você. Seu nome pode ser editado direto na tela principal do aplicativo, e a exclusão completa dos seus dados está disponível no link "Excluir meus dados". Pra qualquer outra dúvida, use o link "Encontrou um problema?" dentro do aplicativo.</p>';
 }
 
 function renderPrivacyModal(){
@@ -2093,6 +2097,7 @@ function renderClientPhoneStep(el){
       '<p class="sub" style="margin:4px 0 0;">É esse nome que vai aparecer pro barbeiro nos agendamentos.</p>'+
       '<label for="phoneStepInput">Telefone</label>'+
       '<input type="tel" id="phoneStepInput" placeholder="(11) 91234-5678" autocomplete="tel">'+
+      '<p class="sub" style="margin:4px 0 0;">Usado pra confirmar seu agendamento e como meio de contato com o barbeiro (ex: em caso de cancelamento).</p>'+
       '<div id="phoneStepError" class="error" role="alert" aria-live="polite" style="display:none;"></div>'+
       '<button class="primary" id="phoneStepBtn">Concluir cadastro</button>'+
     '</div>';
@@ -2147,8 +2152,9 @@ function renderClientPhoneStep(el){
 // ---------- CLIENT APP (booking) ----------
 
 function renderSessionBarHtml(){
+  var nameRow;
   if(state.clientEditingName){
-    return '<div class="session-bar">'+
+    nameRow = '<div class="session-bar">'+
       '<span class="who">'+
         '<input type="text" id="clientNameInput" value="'+escapeHtml(state.clientSession.name)+'" '+
           'style="font-size:13px; padding:4px 8px; border-radius:4px; border:1px solid var(--line); width:160px;" maxlength="60">'+
@@ -2159,11 +2165,28 @@ function renderSessionBarHtml(){
       '</span>'+
     '</div>'+
     '<div id="nameError" class="error" role="alert" aria-live="polite" style="display:none; margin-bottom:10px;"></div>';
+  } else {
+    nameRow = '<div class="session-bar">'+
+      '<span class="who">Logado como '+escapeHtml(state.clientSession.name)+' · <span class="backlink" id="editNameBtn">editar nome</span></span>'+
+      '<span class="backlink" id="logoutClient">Sair</span>'+
+    '</div>';
   }
-  return '<div class="session-bar">'+
-    '<span class="who">Logado como '+escapeHtml(state.clientSession.name)+' · <span class="backlink" id="editNameBtn">editar nome</span></span>'+
-    '<span class="backlink" id="logoutClient">Sair</span>'+
-  '</div>';
+
+  var phoneRow;
+  if(state.clientEditingPhone){
+    phoneRow = '<div class="session-bar-sub-edit">'+
+      '<input type="tel" id="clientPhoneInput" value="'+escapeHtml(state.clientSession.phone || "")+'" '+
+        'style="font-size:13px; padding:4px 8px; border-radius:4px; border:1px solid var(--line); width:160px;" autocomplete="tel">'+
+      '<span class="backlink" id="savePhoneBtn" style="margin-left:10px;">Salvar</span>'+
+      '<span class="backlink" id="cancelPhoneBtn" style="margin-left:10px;">Cancelar</span>'+
+      '<p class="sub" style="margin:6px 0 0;">Usado pra confirmar seu agendamento e como meio de contato com o barbeiro (ex: em caso de cancelamento).</p>'+
+      '<div id="phoneEditError" class="error" role="alert" aria-live="polite" style="display:none; margin-top:4px;"></div>'+
+    '</div>';
+  } else {
+    phoneRow = '<div class="session-bar-sub">Telefone: '+escapeHtml(state.clientSession.phone || "não informado")+' · <span class="backlink" id="editPhoneBtn">editar telefone</span></div>';
+  }
+
+  return nameRow + phoneRow;
 }
 
 function wireSessionBarHandlers(el){
@@ -2207,6 +2230,52 @@ function wireSessionBarHandlers(el){
       }catch(e){
         state.clientSession.name = previous;
         saveBtn.textContent = "Salvar";
+        errBox.textContent = saveErrorMessage();
+        errBox.style.display = "block";
+      }
+    });
+  }
+
+  var editPhoneBtn = document.getElementById("editPhoneBtn");
+  if(editPhoneBtn){
+    makeActivatable(editPhoneBtn, function(){
+      state.clientEditingPhone = true;
+      render();
+    });
+  }
+
+  var cancelPhoneBtn = document.getElementById("cancelPhoneBtn");
+  if(cancelPhoneBtn){
+    makeActivatable(cancelPhoneBtn, function(){
+      state.clientEditingPhone = false;
+      render();
+    });
+  }
+
+  var phoneInput = document.getElementById("clientPhoneInput");
+  if(phoneInput) attachPhoneMask(phoneInput);
+
+  var savePhoneBtn = document.getElementById("savePhoneBtn");
+  if(savePhoneBtn){
+    makeActivatable(savePhoneBtn, async function(){
+      var input = document.getElementById("clientPhoneInput");
+      var errBox = document.getElementById("phoneEditError");
+      var val = input.value.trim();
+      if(!isValidPhone(val)){
+        errBox.textContent = "Informe um telefone válido, com DDD.";
+        errBox.style.display = "block";
+        return;
+      }
+      savePhoneBtn.textContent = "Salvando...";
+      var previous = state.clientSession.phone;
+      state.clientSession.phone = val;
+      try{
+        await setDoc(doc(db, "clients", state.clientSession.uid), { phone: val }, { merge: true });
+        state.clientEditingPhone = false;
+        render();
+      }catch(e){
+        state.clientSession.phone = previous;
+        savePhoneBtn.textContent = "Salvar";
         errBox.textContent = saveErrorMessage();
         errBox.style.display = "block";
       }
@@ -2690,6 +2759,7 @@ async function doClientLogout(){
   try{ await signOut(auth); }catch(e){}
   state.clientSession = null;
   state.clientEditingName = false;
+  state.clientEditingPhone = false;
   state.pendingGoogleUser = null;
   state.clientConfirmed = null;
   state.clientSelectedService = null;
