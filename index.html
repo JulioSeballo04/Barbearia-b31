@@ -894,6 +894,33 @@
   }
   .privacy-link .backlink{ font-size:12px; }
 
+  /* Link discreto pra abrir a exclusão de conta — mesma posição do link de
+     privacidade, mas em vermelho (cor já usada na paleta pra navalha do
+     barbeiro), já que é uma ação destrutiva e precisa se destacar como tal. */
+  .danger-link{
+    text-align:center;
+    margin:0 0 18px;
+    font-size:12px;
+  }
+  .danger-link .backlink{ font-size:12px; color:var(--barber-red); }
+  .modal-card .danger-text{ color:var(--barber-red); font-weight:600; }
+  .modal-actions{
+    display:flex;
+    gap:10px;
+    flex-wrap:wrap;
+    margin-top:16px;
+  }
+  .modal-actions button.danger{
+    background:var(--barber-red);
+    color:var(--white);
+    border:none;
+    border-radius:var(--radius);
+    padding:12px 16px;
+    font-weight:700;
+    cursor:pointer;
+  }
+  .modal-actions button.danger:disabled{ opacity:0.6; cursor:not-allowed; }
+
   /* Modal da política de privacidade — usado em qualquer tela, por isso
      fica fora do fluxo normal de #app (ver div fixa no body). */
   .modal-backdrop{
@@ -980,12 +1007,13 @@
   <div id="app"></div>
 </main>
 <div id="privacyModal" class="modal-backdrop" style="display:none;"></div>
+<div id="deleteAccountModal" class="modal-backdrop" style="display:none;"></div>
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
 import {
   getAuth, GoogleAuthProvider, signInWithPopup, signInAnonymously,
-  signOut, onAuthStateChanged
+  signOut, onAuthStateChanged, deleteUser
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
 import {
   getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, deleteField,
@@ -1128,7 +1156,9 @@ var state = {
   barberClientSearch: "",
   barberBugOpen: false,      // se o formulário de reportar problema está expandido, no painel do barbeiro
   barberTab: "hoje",         // hoje | calendario | clientes | ajustes — abas do painel do barbeiro
-  showPrivacyModal: false    // modal da política de privacidade, acessível de qualquer tela
+  showPrivacyModal: false,   // modal da política de privacidade, acessível de qualquer tela
+  showDeleteAccountModal: false, // modal de confirmação de "excluir meus dados", só na tela do cliente
+  deletingAccount: false     // true enquanto a exclusão está em andamento (evita cliques duplicados)
 };
 
 // Official B31 badge artwork (cropped from the shop's real logo image),
@@ -1735,6 +1765,7 @@ function render(){
   else if(state.screen === "barberAuth") renderBarberAuth(el);
   else if(state.screen === "barberApp") renderBarberApp(el);
   renderPrivacyModal();
+  renderDeleteAccountModal();
 }
 
 // Link que qualquer tela pode usar pra abrir o modal da política de
@@ -1778,9 +1809,9 @@ function privacyPolicyHtml(){
     '<h3>Com quem compartilhamos</h3>'+
     '<p>Não vendemos nem compartilhamos seus dados com terceiros pra fins de marketing. Os dados ficam guardados no Firebase (Google Cloud), usado só pelo funcionamento deste aplicativo.</p>'+
     '<h3>Por quanto tempo guardamos</h3>'+
-    '<p>Enquanto sua conta existir no aplicativo, ou até você pedir a exclusão.</p>'+
+    '<p>Enquanto sua conta existir no aplicativo, ou até você pedir a exclusão. Ao excluir, seus agendamentos futuros são cancelados e seu perfil (nome, telefone, conta de login) é apagado por completo. Os cortes já realizados ficam registrados de forma anônima (só data, serviço e valor), sem nenhum vínculo com você, apenas pra controle financeiro do negócio.</p>'+
     '<h3>Seus direitos</h3>'+
-    '<p>Você pode pedir, a qualquer momento, pra ver, corrigir ou excluir os dados guardados sobre você. É só entrar em contato '+contato+' ou usar o link "Encontrou um problema?" dentro do aplicativo.</p>';
+    '<p>Você pode pedir, a qualquer momento, pra ver, corrigir ou excluir os dados guardados sobre você. Seu nome pode ser editado direto na tela principal do aplicativo, e a exclusão completa dos seus dados está disponível no link "Excluir meus dados". Pra qualquer outra dúvida, é só entrar em contato '+contato+' ou usar o link "Encontrou um problema?" dentro do aplicativo.</p>';
 }
 
 function renderPrivacyModal(){
@@ -1811,6 +1842,151 @@ function renderPrivacyModal(){
       render();
     }
   };
+}
+
+// Link "Excluir meus dados" — só faz sentido pro cliente já logado, então
+// só é usado dentro de renderClientApp.
+function openDeleteAccountLinkHtml(){
+  return '<p class="danger-link"><span class="backlink" id="openDeleteAccountBtn">Excluir meus dados</span></p>';
+}
+function wireDeleteAccountLink(el){
+  var btn = document.getElementById("openDeleteAccountBtn");
+  if(btn){
+    makeActivatable(btn, function(){
+      state.showDeleteAccountModal = true;
+      render();
+    });
+  }
+}
+
+function renderDeleteAccountModal(){
+  var modal = document.getElementById("deleteAccountModal");
+  if(!modal) return;
+  if(!state.showDeleteAccountModal || !state.clientSession){
+    modal.style.display = "none";
+    modal.innerHTML = "";
+    return;
+  }
+  modal.style.display = "flex";
+  modal.innerHTML =
+    '<div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="deleteAccountTitle">'+
+      '<div class="modal-head">'+
+        '<h2 id="deleteAccountTitle" style="padding-bottom:0;">Excluir meus dados</h2>'+
+        '<span class="backlink" id="closeDeleteAccountBtn">Fechar</span>'+
+      '</div>'+
+      '<div class="modal-body">'+
+        '<p class="danger-text">Essa ação não pode ser desfeita.</p>'+
+        '<p>Isso vai:</p>'+
+        '<ul>'+
+          '<li>Apagar seu perfil (nome e telefone) guardado no aplicativo;</li>'+
+          '<li>Cancelar qualquer agendamento futuro que você tenha marcado;</li>'+
+          '<li>Manter, só pra controle financeiro do negócio, a data/serviço/valor dos cortes já realizados — mas sem seu nome, telefone ou qualquer jeito de ligar isso a você;</li>'+
+          '<li>Apagar sua conta de acesso — você precisaria criar tudo de novo pra agendar outra vez.</li>'+
+        '</ul>'+
+        '<div id="deleteAccountError" class="error" role="alert" aria-live="polite" style="display:none;"></div>'+
+        '<div class="modal-actions">'+
+          '<button type="button" class="danger" id="confirmDeleteAccountBtn">Sim, excluir meus dados</button>'+
+          '<button type="button" class="ghost" id="cancelDeleteAccountBtn">Cancelar</button>'+
+        '</div>'+
+      '</div>'+
+    '</div>';
+
+  var closeModal = function(){
+    state.showDeleteAccountModal = false;
+    render();
+  };
+  makeActivatable(document.getElementById("closeDeleteAccountBtn"), closeModal);
+  document.getElementById("cancelDeleteAccountBtn").onclick = closeModal;
+  modal.onclick = function(ev){ if(ev.target === modal) closeModal(); };
+
+  document.getElementById("confirmDeleteAccountBtn").onclick = async function(){
+    var btn = document.getElementById("confirmDeleteAccountBtn");
+    var errBox = document.getElementById("deleteAccountError");
+    errBox.style.display = "none";
+    btn.disabled = true;
+    btn.textContent = "Excluindo...";
+    var ok = await deleteClientAccount();
+    if(ok){
+      state.showDeleteAccountModal = false;
+      state.screen = "landing";
+      render();
+      showToast("Seus dados foram excluídos.");
+    } else {
+      btn.disabled = false;
+      btn.textContent = "Sim, excluir meus dados";
+      errBox.textContent = "Não foi possível concluir agora. Se o problema continuar, use o \"Encontrou um problema?\" pra pedir manualmente.";
+      errBox.style.display = "block";
+    }
+  };
+}
+
+// Apaga tudo o que o cliente tem guardado: os próprios agendamentos
+// (passados e futuros — sem base legal pra reter depois de um pedido de
+// exclusão), o perfil em "clients" e por fim a própria conta de login. Tudo
+// isso já é permitido pelas Firestore Rules pro dono dos dados (ver
+// firestore.rules), então não depende de Cloud Function nem do plano Blaze.
+// Apaga tudo o que identifica o cliente, mas preserva o que é dado do
+// negócio (não dele): agendamentos já realizados viram histórico anônimo —
+// mantém data, serviço e valor (pro financeiro do barbeiro), mas perde
+// nome, telefone e o vínculo com o uid, então não dá mais pra saber que
+// aqueles atendimentos foram dessa pessoa nem quantas vezes ela veio.
+// Agendamento futuro/ainda não realizado, em vez de virar uma vaga
+// "fantasma" sem dono, é cancelado de verdade (o barbeiro não teria como
+// atender alguém que ele não sabe mais quem é).
+async function deleteClientAccount(){
+  if(!state.clientSession) return false;
+  var uid = state.clientSession.uid;
+  try{
+    var q = query(collection(db, "appointments"), where("uid", "==", uid));
+    var snap = await getDocs(q);
+    var nowTs = nowSP().getTime();
+    var ops = [];
+    snap.forEach(function(d){
+      var a = d.data();
+      var apptTs = new Date(a.date + "T" + a.time + ":00").getTime();
+      if(apptTs < nowTs){
+        ops.push(updateDoc(doc(db, "appointments", d.id), {
+          name: "Cliente (dados removidos)",
+          phone: "",
+          uid: deleteField()
+        }));
+      } else {
+        ops.push(deleteDoc(doc(db, "appointments", d.id)));
+      }
+    });
+    await Promise.all(ops);
+
+    await deleteDoc(doc(db, "clients", uid));
+
+    if(auth.currentUser){
+      try{
+        await deleteUser(auth.currentUser);
+      }catch(e){
+        // Excluir a conta de login exige um login "recente" por segurança do
+        // próprio Firebase. Se passou muito tempo desde que a pessoa entrou,
+        // pede pra ela confirmar com o Google de novo e tenta uma vez mais.
+        if(e && e.code === "auth/requires-recent-login"){
+          await signInWithPopup(auth, googleProvider);
+          await deleteUser(auth.currentUser);
+        } else {
+          throw e;
+        }
+      }
+    }
+
+    state.clientSession = null;
+    state.clientSelectedService = null;
+    state.clientSelectedDate = null;
+    state.clientSelectedSlot = null;
+    state.clientConfirmed = null;
+    state.clientDateAppts = [];
+    state.clientOwnAppts = [];
+    state.clientView = "book";
+    state.clientBugOpen = false;
+    return true;
+  }catch(e){
+    return false;
+  }
 }
 
 // ---------- LANDING ----------
@@ -2370,12 +2546,14 @@ function renderClientApp(el){
     viewToggleHtml+
     bodyHtml+
     bugReportSectionHtml("client", state.clientBugOpen)+
-    openPrivacyLinkHtml();
+    openPrivacyLinkHtml()+
+    openDeleteAccountLinkHtml();
 
   wireSessionBarHandlers(el);
   wireBugReportHandlers("client", "cliente");
   wireClientCalendarHandlers(el);
   wirePrivacyLink(el);
+  wireDeleteAccountLink(el);
 
   el.querySelectorAll("[data-clientview]").forEach(function(btn){
     btn.onclick = function(){
