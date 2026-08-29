@@ -885,6 +885,58 @@
     font-size:13px;
   }
 
+  /* Link discreto pra abrir a política de privacidade */
+  .privacy-link{
+    text-align:center;
+    margin:6px 0 18px;
+    font-size:12px;
+    color:var(--gray-500);
+  }
+  .privacy-link .backlink{ font-size:12px; }
+
+  /* Modal da política de privacidade — usado em qualquer tela, por isso
+     fica fora do fluxo normal de #app (ver div fixa no body). */
+  .modal-backdrop{
+    position:fixed;
+    inset:0;
+    background:rgba(10,10,10,0.55);
+    display:flex;
+    align-items:flex-end;
+    justify-content:center;
+    z-index:1000;
+    padding:0;
+  }
+  .modal-card{
+    background:var(--white);
+    width:100%;
+    max-width:640px;
+    max-height:85vh;
+    overflow-y:auto;
+    border-radius:14px 14px 0 0;
+    padding:20px 20px 26px;
+    box-shadow:0 -4px 24px rgba(0,0,0,0.25);
+  }
+  .modal-head{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:12px;
+    position:sticky;
+    top:-20px;
+    background:var(--white);
+    padding-top:4px;
+    margin-bottom:6px;
+  }
+  .modal-body{ font-size:13px; line-height:1.55; color:var(--gray-700); }
+  .modal-body h3{ font-size:14px; color:var(--black); margin:16px 0 4px; }
+  .modal-body p{ margin:0 0 10px; }
+  .modal-body ul{ margin:0 0 10px; padding-left:18px; }
+  @media (min-width:640px){
+    .modal-backdrop{ align-items:center; }
+    .modal-card{ border-radius:14px; }
+    .modal-head{ top:-20px; }
+  }
+
   /* Abas do painel do barbeiro */
   .barber-tabs{
     display:flex;
@@ -927,6 +979,7 @@
 <main>
   <div id="app"></div>
 </main>
+<div id="privacyModal" class="modal-backdrop" style="display:none;"></div>
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
@@ -1004,7 +1057,32 @@ async function sha256Hex(text){
 
 // Salga com um valor aleatório por instalação, pra dois barbeiros com o
 // mesmo PIN não terem o mesmo hash salvo no banco.
+//
+// PBKDF2 com muitas iterações (em vez de um SHA-256 direto) é
+// deliberadamente lento — é o ponto. Se alguém algum dia conseguir ler
+// pinHash/pinSalt (ex: criando uma sessão anônima na mão, sem passar pela
+// tela de PIN), tentar todas as combinações offline fica ordens de
+// magnitude mais caro do que com um hash rápido feito pra checar arquivo,
+// não senha.
+var PIN_HASH_ALGO = "pbkdf2-sha256-120k";
+var PIN_HASH_ITERATIONS = 120000;
+
 async function hashPin(pin, salt){
+  var enc = new TextEncoder();
+  var keyMaterial = await crypto.subtle.importKey(
+    "raw", enc.encode(pin), {name: "PBKDF2"}, false, ["deriveBits"]
+  );
+  var bits = await crypto.subtle.deriveBits(
+    {name: "PBKDF2", salt: enc.encode(salt), iterations: PIN_HASH_ITERATIONS, hash: "SHA-256"},
+    keyMaterial, 256
+  );
+  return Array.from(new Uint8Array(bits)).map(function(b){ return b.toString(16).padStart(2, "0"); }).join("");
+}
+
+// Algoritmo antigo (um SHA-256 só), mantido apenas pra continuar
+// reconhecendo o PIN de instalações que já tinham um hash salvo antes
+// dessa troca — ver o upgrade automático em wireBarberAuthHandlers.
+async function hashPinLegacySha256(pin, salt){
   return sha256Hex(salt + ":" + pin);
 }
 
@@ -1049,7 +1127,8 @@ var state = {
   barberClientsLoaded: false,
   barberClientSearch: "",
   barberBugOpen: false,      // se o formulário de reportar problema está expandido, no painel do barbeiro
-  barberTab: "hoje"          // hoje | calendario | clientes | ajustes — abas do painel do barbeiro
+  barberTab: "hoje",         // hoje | calendario | clientes | ajustes — abas do painel do barbeiro
+  showPrivacyModal: false    // modal da política de privacidade, acessível de qualquer tela
 };
 
 // Official B31 badge artwork (cropped from the shop's real logo image),
@@ -1646,14 +1725,93 @@ function render(){
   var el = document.getElementById("app");
   if(!state.loaded){
     el.innerHTML = '<div class="card"><p class="empty">Carregando...</p></div>';
+    renderPrivacyModal();
     return;
   }
-  if(state.screen === "landing") return renderLanding(el);
-  if(state.screen === "clientAuth") return renderClientAuth(el);
-  if(state.screen === "clientPhone") return renderClientPhoneStep(el);
-  if(state.screen === "clientApp") return renderClientApp(el);
-  if(state.screen === "barberAuth") return renderBarberAuth(el);
-  if(state.screen === "barberApp") return renderBarberApp(el);
+  if(state.screen === "landing") renderLanding(el);
+  else if(state.screen === "clientAuth") renderClientAuth(el);
+  else if(state.screen === "clientPhone") renderClientPhoneStep(el);
+  else if(state.screen === "clientApp") renderClientApp(el);
+  else if(state.screen === "barberAuth") renderBarberAuth(el);
+  else if(state.screen === "barberApp") renderBarberApp(el);
+  renderPrivacyModal();
+}
+
+// Link que qualquer tela pode usar pra abrir o modal da política de
+// privacidade — só marca o estado e re-renderiza.
+function openPrivacyLinkHtml(){
+  return '<p class="privacy-link"><span class="backlink" id="openPrivacyBtn">Política de Privacidade</span></p>';
+}
+function wirePrivacyLink(el){
+  var btn = document.getElementById("openPrivacyBtn");
+  if(btn){
+    makeActivatable(btn, function(){
+      state.showPrivacyModal = true;
+      render();
+    });
+  }
+}
+
+// Texto simples e direto (LGPD), pensado pro porte do negócio: sem termos
+// jurídicos que ninguém lê, dizendo com clareza quais dados são guardados,
+// pra quê, e como pedir a exclusão. O WhatsApp cadastrado pelo barbeiro em
+// "Ajustes" é reaproveitado aqui como canal de contato.
+function privacyPolicyHtml(){
+  var contato = state.config && state.config.whatsapp
+    ? "pelo WhatsApp " + state.config.whatsapp
+    : "pelo WhatsApp informado no aplicativo";
+  return
+    '<p>Última atualização: '+MONTH_NAMES[nowSP().getMonth()]+' de '+nowSP().getFullYear()+'.</p>'+
+    '<h3>Quem trata os seus dados</h3>'+
+    '<p>Este aplicativo é usado pela Barbearia B31, em Bragança Paulista/SP, pra organizar os agendamentos dos próprios clientes.</p>'+
+    '<h3>Quais dados coletamos</h3>'+
+    '<ul>'+
+      '<li>Nome e e-mail, obtidos quando você entra com sua conta Google.</li>'+
+      '<li>Telefone/WhatsApp, informado por você no primeiro agendamento.</li>'+
+      '<li>Histórico dos agendamentos feitos por você (serviço, data e horário).</li>'+
+    '</ul>'+
+    '<h3>Pra que usamos</h3>'+
+    '<ul>'+
+      '<li>Confirmar, lembrar e organizar o seu horário na barbearia.</li>'+
+      '<li>Entrar em contato pelo WhatsApp em caso de confirmação ou cancelamento.</li>'+
+      '<li>Mostrar seu histórico de agendamentos dentro do próprio aplicativo.</li>'+
+    '</ul>'+
+    '<h3>Com quem compartilhamos</h3>'+
+    '<p>Não vendemos nem compartilhamos seus dados com terceiros pra fins de marketing. Os dados ficam guardados no Firebase (Google Cloud), usado só pelo funcionamento deste aplicativo.</p>'+
+    '<h3>Por quanto tempo guardamos</h3>'+
+    '<p>Enquanto sua conta existir no aplicativo, ou até você pedir a exclusão.</p>'+
+    '<h3>Seus direitos</h3>'+
+    '<p>Você pode pedir, a qualquer momento, pra ver, corrigir ou excluir os dados guardados sobre você. É só entrar em contato '+contato+' ou usar o link "Encontrou um problema?" dentro do aplicativo.</p>';
+}
+
+function renderPrivacyModal(){
+  var modal = document.getElementById("privacyModal");
+  if(!modal) return;
+  if(!state.showPrivacyModal){
+    modal.style.display = "none";
+    modal.innerHTML = "";
+    return;
+  }
+  modal.style.display = "flex";
+  modal.innerHTML =
+    '<div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="privacyTitle">'+
+      '<div class="modal-head">'+
+        '<h2 id="privacyTitle" style="padding-bottom:0;">Política de Privacidade</h2>'+
+        '<span class="backlink" id="closePrivacyBtn">Fechar</span>'+
+      '</div>'+
+      '<div class="modal-body">'+privacyPolicyHtml()+'</div>'+
+    '</div>';
+  makeActivatable(document.getElementById("closePrivacyBtn"), function(){
+    state.showPrivacyModal = false;
+    render();
+  });
+  // Fecha também clicando fora do card, no fundo escurecido.
+  modal.onclick = function(ev){
+    if(ev.target === modal){
+      state.showPrivacyModal = false;
+      render();
+    }
+  };
 }
 
 // ---------- LANDING ----------
@@ -1678,7 +1836,8 @@ function renderLanding(el){
           '<p>Área do barbeiro. Acesso restrito.</p>'+
         '</div>'+
       '</div>'+
-    '</div>';
+    '</div>'+
+    openPrivacyLinkHtml();
   makeActivatable(document.getElementById("goClient"), function(){
     state.screen = "clientAuth";
     render();
@@ -1687,6 +1846,7 @@ function renderLanding(el){
     state.screen = "barberAuth";
     render();
   });
+  wirePrivacyLink(el);
 }
 
 // ---------- CLIENT AUTH ----------
@@ -1700,7 +1860,8 @@ function renderClientAuth(el){
       '<p class="sub">Entre com sua conta Google pra marcar um horário.</p>'+
       '<div id="authError" class="error" role="alert" aria-live="polite" style="display:none;"></div>'+
       '<button class="primary" id="googleBtn">Entrar com Google</button>'+
-    '</div>';
+    '</div>'+
+    openPrivacyLinkHtml();
 
   document.getElementById("backLink").setAttribute("tabindex", "0");
   document.getElementById("backLink").setAttribute("role", "button");
@@ -1709,6 +1870,7 @@ function renderClientAuth(el){
   document.getElementById("backLink").onkeydown = function(ev){
     if(ev.key === "Enter" || ev.key === " "){ ev.preventDefault(); backHandler(); }
   };
+  wirePrivacyLink(el);
 
   document.getElementById("googleBtn").onclick = async function(){
     var errBox = document.getElementById("authError");
@@ -2208,11 +2370,13 @@ function renderClientApp(el){
     renderSessionBarHtml()+
     viewToggleHtml+
     bodyHtml+
-    bugReportSectionHtml("client", state.clientBugOpen);
+    bugReportSectionHtml("client", state.clientBugOpen)+
+    openPrivacyLinkHtml();
 
   wireSessionBarHandlers(el);
   wireBugReportHandlers("client", "cliente");
   wireClientCalendarHandlers(el);
+  wirePrivacyLink(el);
 
   el.querySelectorAll("[data-clientview]").forEach(function(btn){
     btn.onclick = function(){
@@ -2403,10 +2567,11 @@ function renderBarberAuth(el){
       // trava real é a comparação do hash abaixo, feita depois da leitura.
       if(!auth.currentUser){ await signInAnonymously(auth); }
       var secretsSnap = await getDoc(doc(db, "barberSecrets", "main"));
-      var pinHash, pinSalt;
+      var pinHash, pinSalt, pinAlgo;
       if(secretsSnap.exists()){
         pinHash = secretsSnap.data().pinHash;
         pinSalt = secretsSnap.data().pinSalt;
+        pinAlgo = secretsSnap.data().pinAlgo; // ausente em instalações antigas
       } else {
         // Primeiro acesso depois de passar a hashear o PIN: se ainda
         // existir um PIN em texto puro salvo do jeito antigo, migra ele
@@ -2415,14 +2580,34 @@ function renderBarberAuth(el){
         var legacyPin = (state.config && typeof state.config.pin === "string") ? state.config.pin : DEFAULT_PIN;
         pinSalt = randomHex(16);
         pinHash = await hashPin(legacyPin, pinSalt);
-        await setDoc(doc(db, "barberSecrets", "main"), { pinHash: pinHash, pinSalt: pinSalt });
+        pinAlgo = PIN_HASH_ALGO;
+        await setDoc(doc(db, "barberSecrets", "main"), { pinHash: pinHash, pinSalt: pinSalt, pinAlgo: pinAlgo });
         if(state.config && typeof state.config.pin !== "undefined"){
           try{ await updateDoc(doc(db, "barberConfig", "main"), { pin: deleteField() }); }catch(e){}
           delete state.config.pin;
         }
       }
-      var typedHash = await hashPin(val, pinSalt);
-      if(typedHash === pinHash){
+
+      var matched;
+      if(pinAlgo === PIN_HASH_ALGO){
+        var typedHash = await hashPin(val, pinSalt);
+        matched = (typedHash === pinHash);
+      } else {
+        // Hash salvo com o algoritmo antigo (SHA-256 direto). Verifica do
+        // jeito antigo e, se bater, já troca pro PBKDF2 na hora — o
+        // barbeiro nem percebe, mas da próxima vez em diante o PIN já
+        // está protegido com o hash mais forte.
+        var legacyTypedHash = await hashPinLegacySha256(val, pinSalt);
+        matched = (legacyTypedHash === pinHash);
+        if(matched){
+          try{
+            var upgradedHash = await hashPin(val, pinSalt);
+            await setDoc(doc(db, "barberSecrets", "main"), { pinHash: upgradedHash, pinSalt: pinSalt, pinAlgo: PIN_HASH_ALGO });
+          }catch(e){ /* login segue normalmente mesmo se o upgrade falhar agora */ }
+        }
+      }
+
+      if(matched){
         state.barberLoggedIn = true;
         state.screen = "barberApp";
         render();
@@ -3171,8 +3356,8 @@ function renderBarberApp(el){
       }
       // O campo de PIN só é validado se o barbeiro digitou algo — deixar em
       // branco significa "não quero trocar o PIN agora".
-      if(newPin && newPin.length < 4){
-        saved.textContent = "O novo PIN precisa ter pelo menos 4 caracteres.";
+      if(newPin && newPin.length < 6){
+        saved.textContent = "O novo PIN precisa ter pelo menos 6 caracteres.";
         saved.style.display = "block";
         return;
       }
@@ -3203,7 +3388,7 @@ function renderBarberApp(el){
         try{
           var newSalt = randomHex(16);
           var newHash = await hashPin(newPin, newSalt);
-          await setDoc(doc(db, "barberSecrets", "main"), { pinHash: newHash, pinSalt: newSalt });
+          await setDoc(doc(db, "barberSecrets", "main"), { pinHash: newHash, pinSalt: newSalt, pinAlgo: PIN_HASH_ALGO });
           document.getElementById("newPin").value = "";
         }catch(e){
           saved.textContent = "Configurações salvas, mas não foi possível trocar o PIN agora. Tente de novo.";
