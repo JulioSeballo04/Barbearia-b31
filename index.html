@@ -1093,7 +1093,7 @@ var DEFAULT_PIN = "1234";
 // barbeiro pra acessar o painel. Precisa ser IDÊNTICO ao valor usado na
 // função isBarberSession() de firestore.rules — são as duas metades da
 // mesma trava. Sem essa troca, ninguém consegue logar como barbeiro.
-var BARBER_EMAIL = "TROQUE-PELO-EMAIL-DO-BARBEIRO@gmail.com";
+var BARBER_EMAIL = "seballojuliocesar@gmail.com";
 
 function isCurrentUserTheBarber(){
   return !!(auth.currentUser && auth.currentUser.email === BARBER_EMAIL &&

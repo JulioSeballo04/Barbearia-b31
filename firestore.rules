@@ -2,10 +2,16 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // O cliente entra com Google; o barbeiro entra com sessão anônima +
-    // PIN checado no app (ver auth.js/booking.js). Como os dois têm
-    // request.auth preenchido, usamos o provedor de login pra diferenciar
-    // quem é quem dentro das regras.
+    // O cliente entra com Google (qualquer conta). O barbeiro TAMBÉM entra
+    // com Google, mas só uma conta específica conta como barbeiro — a
+    // verificação de e-mail abaixo é a fronteira de segurança de verdade,
+    // não o PIN (o PIN, no app, é só uma trava de conveniência DEPOIS que
+    // o Google já confirmou que é essa conta).
+    //
+    // ATENÇÃO — TROCAR ANTES DE PUBLICAR: o e-mail abaixo precisa ser
+    // IDÊNTICO ao valor de BARBER_EMAIL em index.html. São as duas metades
+    // da mesma trava — se um dos dois ficar com o valor de exemplo, o
+    // barbeiro não consegue entrar (ou, pior, a trava não fecha de verdade).
     function isSignedIn() {
       return request.auth != null;
     }
@@ -17,7 +23,9 @@ service cloud.firestore {
 
     function isBarberSession() {
       return isSignedIn() &&
-        request.auth.token.firebase.sign_in_provider == "anonymous";
+        request.auth.token.firebase.sign_in_provider == "google.com" &&
+        request.auth.token.email_verified == true &&
+        request.auth.token.email == "seballojuliocesar@gmail.com";
     }
 
     // Cada cliente só lê/edita o próprio perfil. Barbeiro pode ler todos
@@ -37,13 +45,15 @@ service cloud.firestore {
     }
 
     // Só o hash do PIN (nunca o valor em texto puro) fica aqui, separado do
-    // resto da configuração. Importante: como a sessão do barbeiro é uma
-    // sessão anônima (qualquer visitante consegue criar uma sozinha, sem
-    // precisar saber o PIN), esta regra reduz a exposição do hash pra quem
-    // passou pelo fluxo do app, mas não é uma trava perfeita contra alguém
-    // deliberadamente mal-intencionado que crie uma sessão anônima na mão.
-    // Uma trava definitiva exigiria mover a comparação do PIN pra uma Cloud
-    // Function, que nunca expõe o hash a nenhum cliente.
+    // resto da configuração. Antes desta correção, "isBarberSession" só
+    // conferia "é uma sessão anônima?" — e qualquer visitante conseguia
+    // criar uma sozinha sem precisar do PIN, ganhando esse mesmo acesso.
+    // Agora "isBarberSession" exige a conta Google específica do barbeiro
+    // (ver definição acima), que só o próprio barbeiro consegue autenticar
+    // — então mesmo que alguém leia pinHash/pinSalt aqui, isso não abre
+    // nenhuma porta que a verificação de e-mail já não tivesse fechado. O
+    // hash continua em PBKDF2 com muitas iterações (ver hashPin/
+    // PIN_HASH_ALGO no index.html) como camada extra de defesa.
     match /barberSecrets/{doc} {
       allow read: if isBarberSession();
       allow write: if isBarberSession();
@@ -55,13 +65,26 @@ service cloud.firestore {
     }
 
     // Agendamentos: qualquer sessão logada pode ler (precisa ver horários
-    // ocupados). Cliente só cria/cancela o próprio; barbeiro pode
-    // cancelar e marcar como concluído qualquer um.
+    // ocupados). Cliente cria o próprio, e pode cancelar (delete) o próprio
+    // a qualquer momento — mas "update" pra sessão de cliente é restrito só
+    // aos campos que o app realmente usa nesse caso (name/phone/uid, na
+    // anonimização quando alguém exclui os próprios dados — ver
+    // deleteClientAccount no index.html). Sem essa lista, a regra só
+    // checava "é seu?" e não "o que você pode mudar?", então um cliente
+    // falando direto com o Firestore (sem passar pela tela do app) poderia
+    // editar preço, serviço, data ou horário do próprio agendamento —
+    // mesmo sem pagamento passando pelo app, isso bagunçaria o controle de
+    // faturamento que o barbeiro usa esse registro pra fazer. Barbeiro
+    // continua podendo atualizar qualquer campo (ex: marcar como
+    // concluído) e cancelar qualquer agendamento.
     match /appointments/{apptId} {
       allow read: if isSignedIn();
       allow create: if isClientSession() && request.resource.data.uid == request.auth.uid;
-      allow update, delete: if (isClientSession() && resource.data.uid == request.auth.uid) ||
+      allow delete: if (isClientSession() && resource.data.uid == request.auth.uid) ||
         isBarberSession();
+      allow update: if isBarberSession() ||
+        (isClientSession() && resource.data.uid == request.auth.uid &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(["name", "phone", "uid"]));
     }
   }
 }
