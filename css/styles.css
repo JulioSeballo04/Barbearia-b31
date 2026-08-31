@@ -692,11 +692,23 @@
     cursor:default;
   }
   .cal-day .cal-num{ font-weight:600; }
-  .cal-day.is-today{ border-color:var(--gold-dark); border-width:2px; }
+  /* Dia de atendimento (dentro dos dias/horários configurados, sem
+     exceção de fechamento): destaque suave, pra bater o olho e já ver
+     quais dias da semana têm expediente sem precisar decorar a
+     configuração. Não se aplica a dias passados — aí prevalece o cinza
+     de "is-past" abaixo. */
+  .cal-day.is-workday:not(.is-past){ background:var(--gold-soft); border-color:var(--gold-dark); }
   .cal-day.is-past{ color:var(--gray-300); background:var(--gray-100); }
   .cal-day.is-off{ background:var(--gray-100); color:var(--gray-500); }
   .cal-day.is-closed{ background:var(--gray-100); text-decoration:line-through; color:var(--gray-500); }
   .cal-day.is-locked{ opacity:0.45; }
+  /* "Hoje" precisa ser inconfundível mesmo em cima do destaque de dia de
+     atendimento acima — por isso preenche a célula inteira (não só uma
+     borda fina fácil de não notar) e usa !important: sem isso, a regra de
+     .is-workday (3 classes de especificidade) ganharia da de .is-today (2
+     classes) sempre que os dois baterem junto — o que é o caso comum,
+     já que "hoje" normalmente também é dia de expediente. */
+  .cal-day.is-today{ background:var(--gold-dark) !important; color:var(--white) !important; border-color:var(--gold-dark); border-width:2px; font-weight:700; }
   .cal-day.has-appts{ border-color:var(--gold); }
   .cal-day.is-selected{ background:var(--black); color:var(--white); border-color:var(--gold); }
   .cal-day .cal-dot{

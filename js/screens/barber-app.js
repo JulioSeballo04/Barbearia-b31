@@ -51,12 +51,14 @@ export function renderBarberCalendarCardHtml(){
     var hasCustomPeriods = override && Array.isArray(override.periods) && override.periods.length;
     var isClosed = override && override.closed;
     var isOff = !isClosed && !isDefaultWorkDay && !hasCustomPeriods;
+    var isWorkday = !isClosed && (isDefaultWorkDay || hasCustomPeriods);
     var count = apptCounts[k] || 0;
     var classes = ["cal-day"];
     if(isToday) classes.push("is-today");
     if(isPast) classes.push("is-past");
     if(isClosed) classes.push("is-closed");
     else if(isOff) classes.push("is-off");
+    if(isWorkday) classes.push("is-workday");
     if(count > 0) classes.push("has-appts");
     if(!unlocked && !isPast) classes.push("is-locked");
     if(k === state.barberSelectedDay) classes.push("is-selected");
@@ -90,6 +92,8 @@ export function renderBarberCalendarCardHtml(){
     '<div class="cal-dow">'+DOW.map(function(n){ return '<span>'+n+'</span>'; }).join("")+'</div>'+
     '<div class="cal-grid">'+cells.join("")+'</div>'+
     '<div class="cal-legend">'+
+      '<span><span class="dot" style="background:var(--gold-dark); border-radius:3px;"></span> Hoje</span>'+
+      '<span><span class="dot" style="background:var(--gold-soft); border-radius:3px; border:1px solid var(--gold-dark);"></span> Atende nesse dia</span>'+
       '<span><span class="dot" style="background:var(--gold-dark);"></span> Tem agendamento</span>'+
       '<span><span class="dot" style="background:var(--gray-300);"></span> Não atende</span>'+
     '</div>'+
