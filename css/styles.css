@@ -699,8 +699,12 @@
      de "is-past" abaixo. */
   .cal-day.is-workday:not(.is-past){ background:var(--gold-soft); border-color:var(--gold-dark); }
   .cal-day.is-past{ color:var(--gray-300); background:var(--gray-100); }
-  .cal-day.is-off{ background:var(--gray-100); color:var(--gray-500); }
-  .cal-day.is-closed{ background:var(--gray-100); text-decoration:line-through; color:var(--gray-500); }
+  /* Dias sem atendimento (fim de semana de folga, ou fechado por exceção):
+     vermelho suave, pra bater o olho tão rápido quanto o dourado dos dias
+     de atendimento acima — antes os dois usavam o mesmo cinza neutro e só
+     dava pra diferenciar lendo o texto/legenda. */
+  .cal-day.is-off{ background:rgba(193,39,45,0.12); border-color:var(--barber-red); color:var(--barber-red); }
+  .cal-day.is-closed{ background:rgba(193,39,45,0.12); border-color:var(--barber-red); text-decoration:line-through; color:var(--barber-red); }
   .cal-day.is-locked{ opacity:0.45; }
   /* "Hoje" precisa ser inconfundível mesmo em cima do destaque de dia de
      atendimento acima — por isso preenche a célula inteira (não só uma
@@ -711,9 +715,18 @@
   .cal-day.is-today{ background:var(--gold-dark) !important; color:var(--white) !important; border-color:var(--gold-dark); border-width:2px; font-weight:700; }
   .cal-day.has-appts{ border-color:var(--gold); }
   .cal-day.is-selected{ background:var(--black); color:var(--white); border-color:var(--gold); }
+  /* Bolinha dourada com a quantidade de agendamentos do dia dentro — antes
+     era só um pontinho sem número, então dava pra saber que tinha
+     agendamento mas não quantos sem abrir o dia. */
   .cal-day .cal-dot{
-    width:6px; height:6px; border-radius:50%;
+    min-width:16px; height:16px; padding:0 3px;
+    border-radius:8px;
     background:var(--gold-dark);
+    color:var(--white);
+    font-size:10px;
+    font-weight:700;
+    line-height:16px;
+    text-align:center;
   }
   .cal-day.is-selected .cal-dot{ background:var(--gold); }
   .cal-legend{

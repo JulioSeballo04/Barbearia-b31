@@ -65,7 +65,7 @@ export function renderBarberCalendarCardHtml(){
     if(k === state.barberSelectedDay) classes.push("is-selected");
     cells.push('<div class="'+classes.join(" ")+'" data-calday="'+k+'" role="button" tabindex="0">'+
       '<span class="cal-num">'+day+'</span>'+
-      (count > 0 ? '<span class="cal-dot"></span>' : '')+
+      (count > 0 ? '<span class="cal-dot">'+count+'</span>' : '')+
     '</div>');
   }
 
@@ -96,7 +96,7 @@ export function renderBarberCalendarCardHtml(){
       '<span><span class="dot" style="background:var(--gold-dark); border-radius:3px;"></span> Hoje</span>'+
       '<span><span class="dot" style="background:var(--gold-soft); border-radius:3px; border:1px solid var(--gold-dark);"></span> Atende nesse dia</span>'+
       '<span><span class="dot" style="background:var(--gold-dark);"></span> Tem agendamento</span>'+
-      '<span><span class="dot" style="background:var(--gray-300);"></span> Não atende</span>'+
+      '<span><span class="dot" style="background:rgba(193,39,45,0.35); border:1px solid var(--barber-red);"></span> Não atende</span>'+
     '</div>'+
     unlockBoxHtml+
     renderDayEditorHtml()+
