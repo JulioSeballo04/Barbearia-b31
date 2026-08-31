@@ -79,6 +79,10 @@ export function renderClientPhoneStep(el){
       '<label for="phoneStepInput">Telefone</label>'+
       '<input type="tel" id="phoneStepInput" placeholder="(11) 91234-5678" autocomplete="tel">'+
       '<p class="sub" style="margin:4px 0 0;">Usado pra confirmar seu agendamento e como meio de contato com o barbeiro (ex: em caso de cancelamento).</p>'+
+      '<label style="display:flex; align-items:center; gap:8px; margin-top:14px;">'+
+        '<input type="checkbox" id="ageConfirmChk" style="width:auto;">'+
+        ' Declaro ser maior de 18 anos, ou estar agendando como responsável por um menor.'+
+      '</label>'+
       '<div id="phoneStepError" class="error" role="alert" aria-live="polite" style="display:none;"></div>'+
       '<button class="primary" id="phoneStepBtn">Concluir cadastro</button>'+
     '</div>';
@@ -87,6 +91,7 @@ export function renderClientPhoneStep(el){
   document.getElementById("phoneStepBtn").onclick = async function(){
     var nameInput = document.getElementById("nameStepInput");
     var input = document.getElementById("phoneStepInput");
+    var ageChk = document.getElementById("ageConfirmChk");
     var errBox = document.getElementById("phoneStepError");
     var name = nameInput.value.trim().slice(0, 60);
     var phone = input.value.trim();
@@ -104,6 +109,11 @@ export function renderClientPhoneStep(el){
       errBox.style.display = "block";
       return;
     }
+    if(!ageChk.checked){
+      errBox.textContent = "Confirme que é maior de 18 anos (ou responsável) pra continuar.";
+      errBox.style.display = "block";
+      return;
+    }
     errBox.style.display = "none";
     var btn = document.getElementById("phoneStepBtn");
     btn.disabled = true;
@@ -114,7 +124,12 @@ export function renderClientPhoneStep(el){
         name: name,
         email: user.email || "",
         photoURL: user.photoURL || "",
-        phone: phone
+        phone: phone,
+        // Registro de quando a pessoa confirmou a declaração de maioridade
+        // (ver checkbox acima) — não é uma verificação real de idade (o app
+        // não tem como confirmar isso de fato), só o registro de que a
+        // pessoa afirmou estar de acordo antes de criar a conta.
+        ageConfirmedAt: Date.now()
       }, { merge: true });
       state.clientSession = {uid: user.uid, name: name, phone: phone, email: user.email};
       state.pendingGoogleUser = null;
