@@ -1036,7 +1036,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
 import {
   getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, deleteField,
-  collection, getDocs, query, where, documentId, runTransaction
+  collection, getDocs, query, where, documentId, runTransaction, onSnapshot
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
 
 var firebaseConfig = {
@@ -1088,6 +1088,17 @@ var MONTH_NAMES = ["janeiro","fevereiro","março","abril","maio","junho","julho"
 // firestore.rules) — só o hash dele. Isso é o valor usado quando um
 // projeto novo ainda não tem nenhum PIN configurado.
 var DEFAULT_PIN = "1234";
+
+// Trava contra um cliente (por bug no app, ou clicando "confirmar" várias
+// vezes) lotar a agenda sozinho com um monte de horários futuros. É uma
+// checagem de UX, não uma trava de segurança de verdade — as Firestore
+// Rules não têm como contar "quantos agendamentos esse uid já tem" sem um
+// contador dedicado, então um cliente falando direto com o Firestore (sem
+// passar pela tela do app) ainda conseguiria burlar isso. Pra fechar essa
+// porta de verdade seria preciso manter um contador em clients/{uid},
+// atualizado na mesma transação do agendamento — vale a pena se algum dia
+// isso virar um problema real.
+var MAX_ACTIVE_APPTS_PER_CLIENT = 3;
 
 // ATENÇÃO — TROCAR ANTES DE PUBLICAR: e-mail da conta Google usada pelo
 // barbeiro pra acessar o painel. Precisa ser IDÊNTICO ao valor usado na
@@ -1526,6 +1537,32 @@ async function refreshAppts(){
     state.appts = list;
     return true;
   }catch(e){ return false; }
+}
+
+// Enquanto o painel do barbeiro está aberto, escuta os agendamentos do ano
+// em tempo real (em vez de reconsultar tudo a cada N segundos): um
+// agendamento feito ou cancelado em qualquer outro aparelho aparece na tela
+// assim que o Firestore avisa, sem espera nem re-fetch manual. Guarda a
+// função de "parar de escutar" pra poder desligar no logout — senão a
+// escuta continuaria rodando (e consumindo leituras) mesmo fora do painel.
+var apptsUnsubscribe = null;
+function startApptsListener(){
+  if(apptsUnsubscribe) return;
+  var yearStart = dateKey(new Date(nowSP().getFullYear(), 0, 1));
+  var q = query(collection(db, "appointments"), where("date", ">=", yearStart));
+  apptsUnsubscribe = onSnapshot(q, function(snap){
+    var list = [];
+    snap.forEach(function(d){ list.push(Object.assign({id: d.id}, d.data())); });
+    list.sort(function(a,b){ return (a.date+a.time).localeCompare(b.date+b.time); });
+    state.appts = list;
+    render();
+  }, function(e){
+    // Se a escuta cair (ex: sem internet), mantém os dados que já estavam
+    // na tela; o botão "Atualizar" do painel continua disponível como plano B.
+  });
+}
+function stopApptsListener(){
+  if(apptsUnsubscribe){ apptsUnsubscribe(); apptsUnsubscribe = null; }
 }
 
 // Busca só os agendamentos do dia selecionado, usado na tela do cliente
@@ -2727,6 +2764,11 @@ function renderClientApp(el){
       errBox.style.display = "block";
       return;
     }
+    if(getUpcomingClientAppts().length >= MAX_ACTIVE_APPTS_PER_CLIENT){
+      errBox.textContent = "Você já tem "+MAX_ACTIVE_APPTS_PER_CLIENT+" agendamentos marcados. Cancele um pra marcar outro.";
+      errBox.style.display = "block";
+      return;
+    }
     errBox.style.display = "none";
     var btn = document.getElementById("confirmBtn");
     btn.disabled = true;
@@ -2823,6 +2865,7 @@ async function doClientLogout(){
 // completa no próximo acesso, e não só o PIN de conveniência — consistente
 // com o resto do app, que nunca restaura sessão de barbeiro sozinho.
 async function doBarberLogout(){
+  stopApptsListener();
   try{ await signOut(auth); }catch(e){}
   state.barberLoggedIn = false;
   state.barberTab = "hoje";
@@ -2977,7 +3020,7 @@ function renderBarberAuth(el){
         state.screen = "barberApp";
         state.barberLastActivity = Date.now();
         render();
-        refreshAppts().then(render);
+        startApptsListener();
         refreshClients().then(render);
       } else {
         btn.disabled = false;
@@ -3898,23 +3941,14 @@ async function init(){
     });
   });
 
-  // While the barber panel is open, quietly re-check storage for new
-  // bookings every few seconds so the barber doesn't have to manually
-  // refresh or reopen the page to see appointments made elsewhere.
-  // Skipped while a form field is focused so it never interrupts typing.
+  // Agendamentos novos já chegam em tempo real via startApptsListener() (ver
+  // acima). Este intervalo agora só cuida do logout por inatividade.
   setInterval(async function(){
     if(state.screen !== "barberApp") return;
     if(state.barberLastActivity && (Date.now() - state.barberLastActivity) > BARBER_INACTIVITY_LIMIT_MS){
       await doBarberLogout();
-      return;
     }
-    var active = document.activeElement;
-    var isTyping = active && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName);
-    if(isTyping) return;
-    var before = JSON.stringify(state.appts);
-    await refreshAppts();
-    if(JSON.stringify(state.appts) !== before){ render(); }
-  }, 12000);
+  }, 30000);
 }
 init();
 
