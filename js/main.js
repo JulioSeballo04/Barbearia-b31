@@ -1,8 +1,8 @@
 import { BARBER_EMAIL } from "./constants.js";
-import { loadData, refreshClientOwnAppts } from "./data.js";
+import { loadData, refreshClients, refreshClientOwnAppts, startApptsListener } from "./data.js";
 import { auth, db, doc, getDoc, onAuthStateChanged } from "./firebase.js";
 import { render } from "./render.js";
-import { doBarberLogout } from "./screens/barber-auth.js";
+import { doBarberLogout, isBarberSessionUnlocked, touchBarberSession } from "./screens/barber-auth.js";
 import { state } from "./state.js";
 
 async function init(){
@@ -11,18 +11,31 @@ async function init(){
 
   // Restaura a sessão do cliente se o navegador ainda tiver um login
   // Google válido (Firebase mantém isso entre recarregamentos de página).
-  // O painel do barbeiro nunca abre sozinho nesse restore — ele sempre
-  // passa de novo pela tela de acesso (Google + PIN), que é a trava real.
-  // Isso inclui a própria conta do barbeiro: se ela também tiver (por
-  // teste, por exemplo) um perfil de cliente salvo, o restore automático
-  // é pulado mesmo assim — senão, ao recarregar a página logado como
-  // barbeiro, o app cairia direto na tela de agendamento do cliente em
+  // O painel do barbeiro só abre sozinho nesse restore se, além da sessão
+  // Google, ele também já tiver confirmado o PIN há pouco tempo neste
+  // aparelho (ver isBarberSessionUnlocked/BARBER_SESSION_PERSIST_MS) — sem
+  // isso ele sempre passa de novo pela tela de acesso (Google + PIN), que é
+  // a trava real. Isso inclui a própria conta do barbeiro: se ela também
+  // tiver (por teste, por exemplo) um perfil de cliente salvo, o restore de
+  // cliente é pulado mesmo assim — senão, ao recarregar a página logado
+  // como barbeiro, o app cairia direto na tela de agendamento do cliente em
   // vez de ficar na landing/painel, o que já aconteceu na prática.
   var restoreResolved = false;
   onAuthStateChanged(auth, async function(user){
     if(restoreResolved) return; // só usa a primeira notificação, na carga inicial
     restoreResolved = true;
-    if(user && user.email === BARBER_EMAIL) return;
+    if(user && user.email === BARBER_EMAIL){
+      if(isBarberSessionUnlocked()){
+        state.barberLoggedIn = true;
+        state.screen = "barberApp";
+        state.barberLastActivity = Date.now();
+        touchBarberSession();
+        render();
+        startApptsListener();
+        refreshClients().then(render);
+      }
+      return;
+    }
     if(user && user.providerData.some(function(p){ return p.providerId === "google.com"; })){
       try{
         var profileSnap = await getDoc(doc(db, "clients", user.uid));
@@ -44,7 +57,10 @@ async function init(){
   var BARBER_INACTIVITY_LIMIT_MS = 30 * 60 * 1000; // 30 minutos
   ["click", "keydown"].forEach(function(evt){
     document.addEventListener(evt, function(){
-      if(state.screen === "barberApp") state.barberLastActivity = Date.now();
+      if(state.screen === "barberApp"){
+        state.barberLastActivity = Date.now();
+        touchBarberSession(); // renova o prazo do "PIN lembrado" neste aparelho
+      }
     });
   });
 

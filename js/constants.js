@@ -1,4 +1,18 @@
 export var DOW = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
+export var DOW_FULL = ["Domingo","Segunda-feira","Terça-feira","Quarta-feira","Quinta-feira","Sexta-feira","Sábado"];
+
+// Chave no localStorage (por aparelho) que guarda quando o barbeiro
+// confirmou o PIN pela última vez, pra não precisar redigitar toda vez que
+// a página recarrega — só a sessão do Google (mantida pelo próprio
+// Firebase) não é suficiente porque o app nunca reabre o painel sozinho
+// sem essa segunda trava (ver wireBarberAuthHandlers/init em main.js).
+export var BARBER_SESSION_STORAGE_KEY = "barberSessionUnlockedAt";
+// Por quanto tempo esse "PIN lembrado" vale sem uso algum — passado esse
+// tempo (ex: aparelho ficou a noite inteira desligado/fechado), volta a
+// pedir o PIN. Enquanto o painel estiver sendo usado, esse prazo é renovado
+// a cada clique (ver o listener de atividade em main.js), então na prática
+// um dia de trabalho contínuo nunca expira.
+export var BARBER_SESSION_PERSIST_MS = 12 * 60 * 60 * 1000; // 12h
 
 export var DEFAULT_CONFIG = {
   services: [
