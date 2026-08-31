@@ -1,3 +1,4 @@
+import { BARBER_EMAIL } from "./constants.js";
 import { loadData, refreshClientOwnAppts } from "./data.js";
 import { auth, db, doc, getDoc, onAuthStateChanged } from "./firebase.js";
 import { render } from "./render.js";
@@ -10,13 +11,18 @@ async function init(){
 
   // Restaura a sessão do cliente se o navegador ainda tiver um login
   // Google válido (Firebase mantém isso entre recarregamentos de página).
-  // O painel do barbeiro nunca abre sozinho nesse restore, mesmo que a
-  // mesma conta Google do barbeiro esteja logada — ele sempre passa de
-  // novo pela tela de acesso (Google + PIN), que é a trava real.
+  // O painel do barbeiro nunca abre sozinho nesse restore — ele sempre
+  // passa de novo pela tela de acesso (Google + PIN), que é a trava real.
+  // Isso inclui a própria conta do barbeiro: se ela também tiver (por
+  // teste, por exemplo) um perfil de cliente salvo, o restore automático
+  // é pulado mesmo assim — senão, ao recarregar a página logado como
+  // barbeiro, o app cairia direto na tela de agendamento do cliente em
+  // vez de ficar na landing/painel, o que já aconteceu na prática.
   var restoreResolved = false;
   onAuthStateChanged(auth, async function(user){
     if(restoreResolved) return; // só usa a primeira notificação, na carga inicial
     restoreResolved = true;
+    if(user && user.email === BARBER_EMAIL) return;
     if(user && user.providerData.some(function(p){ return p.providerId === "google.com"; })){
       try{
         var profileSnap = await getDoc(doc(db, "clients", user.uid));
