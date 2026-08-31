@@ -1,7 +1,8 @@
 import { bugReportSectionHtml, wireBugReportHandlers } from "../bug-report.js";
-import { DOW, MONTH_NAMES } from "../constants.js";
+import { DOW, LOYALTY_VISITS_THRESHOLD, MONTH_NAMES } from "../constants.js";
 import {
-  cancelApptDoc, ensureOverridesLoaded, refreshAppts, refreshClients, saveConfig, saveDayOverride, setApptDoneDoc
+  cancelApptDoc, deleteClientByBarber, ensureOverridesLoaded, refreshAppts, refreshClients, saveConfig, saveDayOverride,
+  setApptDoneDoc, updateClientByBarber
 } from "../data.js";
 import { attachDigitsOnly, attachPhoneMask, makeActivatable, showToast } from "../dom.js";
 import { db, doc, setDoc } from "../firebase.js";
@@ -361,10 +362,49 @@ export function clientsListInnerHtml(){
 
   return list.map(function(c){
     var visits = visitCounts[c.uid] || 0;
+    var isLoyal = visits >= LOYALTY_VISITS_THRESHOLD;
+
+    if(state.barberEditingClientUid === c.uid){
+      return '<div class="client-row">'+
+        '<label for="editClientName">Nome</label>'+
+        '<input type="text" id="editClientName" value="'+escapeHtml(c.name || "")+'" maxlength="60">'+
+        '<label for="editClientPhone">Telefone</label>'+
+        '<input type="tel" id="editClientPhone" value="'+escapeHtml(c.phone || "")+'">'+
+        '<div id="editClientError" class="error" role="alert" aria-live="polite" style="display:none;"></div>'+
+        '<div class="modal-actions">'+
+          '<button type="button" class="primary" data-saveclient="'+c.uid+'">Salvar</button>'+
+          '<button type="button" class="ghost" data-canceleditclient>Cancelar</button>'+
+        '</div>'+
+      '</div>';
+    }
+
+    var starHtml = isLoyal
+      ? ' <span class="loyalty-star" data-starclient="'+c.uid+'" role="button" tabindex="0" title="Cliente fiel — enviar promoção">&#9733;</span>'
+      : "";
+
+    var promoBoxHtml = "";
+    if(state.barberPromoClientUid === c.uid){
+      var defaultMsg = "Olá "+(c.name || "")+"! Você já é super cliente da Barbearia B31 ("+visits+" cortes este ano) — "+
+        "preparei uma promoção especial pra te agradecer. ";
+      promoBoxHtml = '<div class="promo-box" style="margin-top:8px;">'+
+        '<label for="promoMsg">Mensagem (edite como quiser antes de enviar)</label>'+
+        '<textarea id="promoMsg" rows="4">'+escapeHtml(defaultMsg)+'</textarea>'+
+        '<div class="modal-actions" style="margin-top:8px;">'+
+          '<button type="button" class="primary" data-sendpromo="'+c.uid+'">Enviar pelo WhatsApp</button>'+
+          '<button type="button" class="ghost" data-cancelpromo>Cancelar</button>'+
+        '</div>'+
+      '</div>';
+    }
+
     return '<div class="client-row">'+
-      '<div class="who">'+escapeHtml(c.name || "(sem nome)")+'</div>'+
+      '<div class="who">'+escapeHtml(c.name || "(sem nome)")+starHtml+'</div>'+
       '<div class="client-meta">'+escapeHtml(c.phone || "-")+' &middot; '+escapeHtml(c.email || "-")+'</div>'+
       '<div class="client-meta">'+visits+(visits === 1 ? " corte realizado" : " cortes realizados")+' este ano</div>'+
+      '<div class="client-row-actions">'+
+        '<span class="backlink" data-editclient="'+c.uid+'" role="button" tabindex="0">Editar</span>'+
+        '<span class="backlink" data-deleteclient="'+c.uid+'" role="button" tabindex="0" style="color:var(--barber-red);">Excluir</span>'+
+      '</div>'+
+      promoBoxHtml+
     '</div>';
   }).join("");
 }
@@ -403,6 +443,110 @@ export function wireBarberClientsHandlers(el){
       render();
     };
   }
+
+  attachPhoneMask(document.getElementById("editClientPhone"));
+
+  el.querySelectorAll("[data-editclient]").forEach(function(btn){
+    makeActivatable(btn, function(){
+      state.barberEditingClientUid = btn.getAttribute("data-editclient");
+      state.barberPromoClientUid = null;
+      render();
+    });
+  });
+
+  el.querySelectorAll("[data-canceleditclient]").forEach(function(btn){
+    makeActivatable(btn, function(){
+      state.barberEditingClientUid = null;
+      render();
+    });
+  });
+
+  el.querySelectorAll("[data-saveclient]").forEach(function(btn){
+    btn.onclick = async function(){
+      var uid = btn.getAttribute("data-saveclient");
+      var nameInput = document.getElementById("editClientName");
+      var phoneInput = document.getElementById("editClientPhone");
+      var errBox = document.getElementById("editClientError");
+      var name = nameInput.value.trim().slice(0, 60);
+      var phone = phoneInput.value.trim();
+      if(!name){
+        errBox.textContent = "Informe o nome.";
+        errBox.style.display = "block";
+        return;
+      }
+      if(!isValidPhone(phone)){
+        errBox.textContent = "Informe um telefone válido, com DDD.";
+        errBox.style.display = "block";
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = "Salvando...";
+      var ok = await updateClientByBarber(uid, { name: name, phone: phone });
+      if(!ok){
+        btn.disabled = false;
+        btn.textContent = "Salvar";
+        errBox.textContent = saveErrorMessage();
+        errBox.style.display = "block";
+        return;
+      }
+      var c = state.barberClients.find(function(x){ return x.uid === uid; });
+      if(c){ c.name = name; c.phone = phone; }
+      state.barberEditingClientUid = null;
+      showToast("Cliente atualizado.");
+      render();
+    };
+  });
+
+  el.querySelectorAll("[data-deleteclient]").forEach(function(btn){
+    makeActivatable(btn, async function(){
+      var uid = btn.getAttribute("data-deleteclient");
+      var c = state.barberClients.find(function(x){ return x.uid === uid; });
+      var ok = window.confirm("Excluir o cadastro de "+(c ? c.name : "esse cliente")+"? Agendamentos futuros dele serão cancelados.");
+      if(!ok) return;
+      var deleted = await deleteClientByBarber(uid);
+      if(!deleted){
+        showToast(saveErrorMessage(), true);
+        return;
+      }
+      state.barberClients = state.barberClients.filter(function(x){ return x.uid !== uid; });
+      state.appts = state.appts.filter(function(a){ return a.uid !== uid; });
+      showToast("Cliente excluído.");
+      render();
+    });
+  });
+
+  el.querySelectorAll("[data-starclient]").forEach(function(btn){
+    makeActivatable(btn, function(){
+      state.barberEditingClientUid = null;
+      state.barberPromoClientUid = btn.getAttribute("data-starclient");
+      render();
+    });
+  });
+
+  el.querySelectorAll("[data-cancelpromo]").forEach(function(btn){
+    makeActivatable(btn, function(){
+      state.barberPromoClientUid = null;
+      render();
+    });
+  });
+
+  el.querySelectorAll("[data-sendpromo]").forEach(function(btn){
+    btn.onclick = function(){
+      var uid = btn.getAttribute("data-sendpromo");
+      var c = state.barberClients.find(function(x){ return x.uid === uid; });
+      var msgInput = document.getElementById("promoMsg");
+      var msg = msgInput.value.trim();
+      if(!msg) return;
+      var link = c && waLink(c.phone, msg);
+      if(!link){
+        showToast("Esse cliente não tem um telefone válido salvo.", true);
+        return;
+      }
+      window.open(link, "_blank");
+      state.barberPromoClientUid = null;
+      render();
+    };
+  });
 }
 
 export function renderBarberApp(el){
@@ -567,6 +711,19 @@ export function renderBarberApp(el){
       '<h2>Serviços</h2>'+
       '<div id="servicesList"></div>'+
       '<button class="ghost" id="addSvcBtn" style="margin-top:10px;">+ Adicionar serviço</button>'+
+    '</div>'+
+    '<div class="card">'+
+      '<h2>Serviços mais realizados</h2>'+
+      '<p class="sub">Total de '+stats.year+', considerando só os agendamentos marcados como "realizado".</p>'+
+      (stats.byService.length
+        ? '<div class="stats-grid">'+stats.byService.map(function(s){
+            return '<div class="stat-box">'+
+              '<div class="stat-label">'+escapeHtml(s.serviceName)+'</div>'+
+              '<div class="stat-value">'+s.count+(s.count === 1 ? " vez" : " vezes")+'</div>'+
+              '<div class="stat-value money" style="font-size:14px;">'+formatBRL(s.earnings)+'</div>'+
+            '</div>';
+          }).join("")+'</div>'
+        : '<p class="empty">Nenhum serviço realizado ainda este ano.</p>')+
     '</div>'+
     bugReportSectionHtml("barber", state.barberBugOpen);
 

@@ -25,6 +25,8 @@ export var state = {
   barberClients: [],         // lista de clientes cadastrados (nome, email, telefone)
   barberClientsLoaded: false,
   barberClientSearch: "",
+  barberEditingClientUid: null, // uid do cliente com o formulário de editar nome/telefone aberto
+  barberPromoClientUid: null,   // uid do cliente com o campo de mensagem de promoção aberto
   barberBugOpen: false,      // se o formulário de reportar problema está expandido, no painel do barbeiro
   barberTab: "hoje",         // hoje | calendario | clientes | ajustes — abas do painel do barbeiro
   showPrivacyModal: false,   // modal da política de privacidade, acessível de qualquer tela

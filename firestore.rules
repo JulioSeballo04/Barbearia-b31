@@ -29,10 +29,16 @@ service cloud.firestore {
     }
 
     // Cada cliente só lê/edita o próprio perfil. Barbeiro pode ler todos
-    // (precisa ver nome/telefone nos agendamentos).
+    // (precisa ver nome/telefone nos agendamentos) e também escrever —
+    // usado no painel dele pra corrigir nome/telefone digitado errado, ou
+    // remover um cadastro (ex: duplicado, ou a pedido do cliente por outro
+    // canal). Continua sem servir pra um cliente escrever no perfil de
+    // outro: essa metade da condição exige ser sessão de barbeiro de
+    // verdade (ver isBarberSession — mesma trava de e-mail do resto do
+    // app), não só "qualquer sessão logada".
     match /clients/{uid} {
       allow read: if isClientSession() && request.auth.uid == uid || isBarberSession();
-      allow write: if isClientSession() && request.auth.uid == uid;
+      allow write: if (isClientSession() && request.auth.uid == uid) || isBarberSession();
     }
 
     // Configuração pública do barbeiro (serviços, dias, horários, WhatsApp):

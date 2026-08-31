@@ -793,6 +793,30 @@
   }
   .client-row .who{ font-weight:600; font-size:14px; }
   .client-row .client-meta{ font-size:12px; color:var(--gray-500); margin-top:2px; }
+  .client-row-actions{ display:flex; gap:14px; margin-top:6px; }
+  .client-row-actions .backlink{ font-size:12px; }
+  /* Estrelinha de cliente fiel (ver LOYALTY_VISITS_THRESHOLD) — clicável,
+     abre o campo de mensagem de promoção pra esse cliente específico. */
+  .loyalty-star{
+    color:var(--gold-dark);
+    cursor:pointer;
+    font-size:15px;
+    margin-left:4px;
+  }
+  .promo-box{
+    background:var(--gray-100);
+    border:1px solid var(--line);
+    border-radius:8px;
+    padding:12px;
+  }
+  .promo-box textarea{
+    width:100%;
+    font:inherit;
+    padding:8px;
+    border:1px solid var(--line);
+    border-radius:6px;
+    resize:vertical;
+  }
 
   /* Etapa "Serviço" recolhida (depois de escolhida) */
   .step-summary-row{

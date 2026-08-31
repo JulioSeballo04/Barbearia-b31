@@ -33,6 +33,12 @@ export var DEFAULT_CONFIG = {
 
 export var MONTH_NAMES = ["janeiro","fevereiro","março","abril","maio","junho","julho","agosto","setembro","outubro","novembro","dezembro"];
 
+// A partir de quantos cortes "realizados" no ano o cliente ganha a
+// estrelinha de fidelidade no painel do barbeiro (ver clientsListInnerHtml
+// em barber-app.js) — é só um gatilho visual pro barbeiro lembrar de
+// premiar quem já é cliente frequente, não trava nada no fluxo do cliente.
+export var LOYALTY_VISITS_THRESHOLD = 10;
+
 // O PIN nunca fica dentro de barberConfig (ver barberSecrets no
 // firestore.rules) — só o hash dele. Isso é o valor usado quando um
 // projeto novo ainda não tem nenhum PIN configurado.

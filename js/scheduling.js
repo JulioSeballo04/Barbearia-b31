@@ -177,8 +177,17 @@ export function computeBarberStats(){
     monthEarnings: 0, monthJobs: 0,
     yearEarnings: 0, yearJobs: 0,
     year: yearNum,
-    busiestDowLabel: null, busiestDowCount: 0
+    busiestDowLabel: null, busiestDowCount: 0,
+    byService: []
   };
+
+  // Quantas vezes cada serviço foi realizado no ano, e quanto rendeu — pra
+  // o barbeiro ver quais serviços realmente sustentam o negócio (ex: vale
+  // mais focar em divulgar "Corte + Barba" ou "Corte" avulso?). Indexado
+  // por serviceId porque o nome pode mudar (ver Ajustes > Serviços), mas
+  // guarda serviceName também pra continuar exibindo certo mesmo que o
+  // serviço tenha sido renomeado ou removido da lista atual depois.
+  var byServiceMap = {};
 
   // Conta agendamentos (marcados ou não como "realizado") por dia da
   // semana, pra apontar qual dia costuma ter mais movimento — ajuda o
@@ -204,8 +213,19 @@ export function computeBarberStats(){
     if(parseInt(a.date.slice(0, 4), 10) === yearNum){
       stats.yearEarnings += price;
       stats.yearJobs += 1;
+
+      var svcKey = a.serviceId || a.serviceName || "outro";
+      if(!byServiceMap[svcKey]){
+        byServiceMap[svcKey] = { serviceName: a.serviceName || "Outro", count: 0, earnings: 0 };
+      }
+      byServiceMap[svcKey].count += 1;
+      byServiceMap[svcKey].earnings += price;
     }
   });
+
+  stats.byService = Object.keys(byServiceMap)
+    .map(function(k){ return byServiceMap[k]; })
+    .sort(function(a,b){ return b.count - a.count; });
 
   var busiestDow = 0;
   for(var i = 1; i < 7; i++){ if(dowCounts[i] > dowCounts[busiestDow]) busiestDow = i; }

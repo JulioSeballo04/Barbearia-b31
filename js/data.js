@@ -257,3 +257,52 @@ export async function deleteClientAccount(){
   }
 }
 
+
+// Barbeiro corrigindo nome/telefone de um cliente já cadastrado (ex:
+// digitou errado no cadastro, ou o cliente pediu a correção por fora do
+// app). Só esses dois campos — o barbeiro não deveria conseguir mudar o
+// uid nem o e-mail do cliente por aqui.
+export async function updateClientByBarber(uid, fields){
+  try{
+    var patch = {};
+    if(typeof fields.name === "string") patch.name = fields.name;
+    if(typeof fields.phone === "string") patch.phone = fields.phone;
+    await setDoc(doc(db, "clients", uid), patch, { merge: true });
+    return true;
+  }catch(e){ return false; }
+}
+
+// Barbeiro removendo um cadastro de cliente (ex: duplicado, cadastro de
+// teste, ou a pedido do cliente por outro canal que não o "Excluir meus
+// dados" dele mesmo). Mesmo tratamento de agendamentos que a autoexclusão
+// do próprio cliente (ver deleteClientAccount acima): futuro é cancelado
+// de verdade, passado vira histórico anônimo (mantém data/serviço/valor
+// pro financeiro, perde o vínculo com a pessoa). Diferença: aqui não dá
+// pra apagar a conta de login do Google da pessoa (isso só ela mesma
+// consegue, autenticada como ela — o painel do barbeiro não tem esse
+// poder), então se ela voltar a acessar o link vai passar pelo cadastro
+// de novo, como se fosse a primeira vez.
+export async function deleteClientByBarber(uid){
+  try{
+    var q = query(collection(db, "appointments"), where("uid", "==", uid));
+    var snap = await getDocs(q);
+    var nowTs = nowSP().getTime();
+    var ops = [];
+    snap.forEach(function(d){
+      var a = d.data();
+      var apptTs = new Date(a.date + "T" + a.time + ":00").getTime();
+      if(apptTs < nowTs){
+        ops.push(updateDoc(doc(db, "appointments", d.id), {
+          name: "Cliente (dados removidos)",
+          phone: "",
+          uid: deleteField()
+        }));
+      } else {
+        ops.push(deleteDoc(doc(db, "appointments", d.id)));
+      }
+    });
+    await Promise.all(ops);
+    await deleteDoc(doc(db, "clients", uid));
+    return true;
+  }catch(e){ return false; }
+}
