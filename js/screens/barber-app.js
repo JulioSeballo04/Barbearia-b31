@@ -344,10 +344,23 @@ export function clientsListInnerHtml(){
   if(!list.length){
     return '<p class="empty">'+(state.barberClientsLoaded ? "Nenhum cliente encontrado." : "Carregando...")+'</p>';
   }
+
+  // Quantas vezes cada cliente já veio (agendamentos marcados como
+  // "realizado", dentro do histórico já carregado em memória — que cobre o
+  // ano corrente em diante, ver refreshAppts). Serve pro barbeiro enxergar
+  // quem é cliente frequente, ex: pra decidir uma promoção tipo "10º corte
+  // grátis".
+  var visitCounts = {};
+  state.appts.forEach(function(a){
+    if(a.done && a.uid){ visitCounts[a.uid] = (visitCounts[a.uid] || 0) + 1; }
+  });
+
   return list.map(function(c){
+    var visits = visitCounts[c.uid] || 0;
     return '<div class="client-row">'+
       '<div class="who">'+escapeHtml(c.name || "(sem nome)")+'</div>'+
       '<div class="client-meta">'+escapeHtml(c.phone || "-")+' &middot; '+escapeHtml(c.email || "-")+'</div>'+
+      '<div class="client-meta">'+visits+(visits === 1 ? " corte realizado" : " cortes realizados")+' este ano</div>'+
     '</div>';
   }).join("");
 }
@@ -498,7 +511,11 @@ export function renderBarberApp(el){
       '<div class="stats-grid">'+
         '<div class="stat-box"><div class="stat-label">Saldo anual</div><div class="stat-value money">'+formatBRL(stats.yearEarnings)+'</div></div>'+
         '<div class="stat-box"><div class="stat-label">Trabalhos no ano</div><div class="stat-value">'+stats.yearJobs+'</div></div>'+
+        '<div class="stat-box"><div class="stat-label">Dia mais movimentado</div><div class="stat-value">'+
+          (stats.busiestDowLabel ? escapeHtml(stats.busiestDowLabel) : "—")+
+        '</div></div>'+
       '</div>'+
+      (stats.busiestDowLabel ? '<p class="sub" style="margin:8px 0 0;">'+stats.busiestDowCount+(stats.busiestDowCount === 1 ? " agendamento contando" : " agendamentos contando")+' esse dia da semana (passados e futuros).</p>' : "")+
     '</div>';
 
   var apptsSubtitleBits = [todayCount + (todayCount === 1 ? " agendamento hoje" : " agendamentos hoje")];

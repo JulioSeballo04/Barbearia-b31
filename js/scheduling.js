@@ -1,4 +1,4 @@
-import { DOW } from "./constants.js";
+import { DOW, DOW_FULL } from "./constants.js";
 import { state } from "./state.js";
 import { dateKey, nowSP, pad } from "./utils.js";
 
@@ -176,10 +176,21 @@ export function computeBarberStats(){
     weekEarnings: 0, weekJobs: 0,
     monthEarnings: 0, monthJobs: 0,
     yearEarnings: 0, yearJobs: 0,
-    year: yearNum
+    year: yearNum,
+    busiestDowLabel: null, busiestDowCount: 0
   };
 
+  // Conta agendamentos (marcados ou não como "realizado") por dia da
+  // semana, pra apontar qual dia costuma ter mais movimento — ajuda o
+  // barbeiro a se planejar (ex: evitar marcar compromissos pessoais num dia
+  // que historicamente lota). Usa todo o histórico já carregado em memória
+  // (state.appts, que cobre o ano corrente em diante), não só os
+  // "realizados", porque o objetivo aqui é medir demanda/procura, não saldo.
+  var dowCounts = [0, 0, 0, 0, 0, 0, 0];
+
   state.appts.forEach(function(a){
+    dowCounts[new Date(a.date + "T00:00:00").getDay()] += 1;
+
     if(!isCompletedAppt(a, now)) return;
     var price = a.price || 0;
     if(a.date >= weekStartKey){
@@ -195,6 +206,13 @@ export function computeBarberStats(){
       stats.yearJobs += 1;
     }
   });
+
+  var busiestDow = 0;
+  for(var i = 1; i < 7; i++){ if(dowCounts[i] > dowCounts[busiestDow]) busiestDow = i; }
+  if(dowCounts[busiestDow] > 0){
+    stats.busiestDowLabel = DOW_FULL[busiestDow];
+    stats.busiestDowCount = dowCounts[busiestDow];
+  }
 
   return stats;
 }

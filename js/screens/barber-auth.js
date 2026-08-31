@@ -1,4 +1,4 @@
-import { BARBER_EMAIL, DEFAULT_PIN } from "../constants.js";
+import { BARBER_EMAIL, BARBER_SESSION_PERSIST_MS, BARBER_SESSION_STORAGE_KEY, DEFAULT_PIN } from "../constants.js";
 import { refreshClients, startApptsListener, stopApptsListener } from "../data.js";
 import { attachDigitsOnly, makeActivatable, renderAuthLogo } from "../dom.js";
 import {
@@ -14,14 +14,37 @@ export function isCurrentUserTheBarber(){
     auth.currentUser.providerData.some(function(p){ return p.providerId === "google.com"; }));
 }
 
+// Marca "PIN confirmado agora neste aparelho" — chamado tanto no login
+// quanto (renovando o prazo) a cada atividade dentro do painel, pra um dia
+// inteiro de uso contínuo nunca expirar essa trava por inatividade.
+export function touchBarberSession(){
+  try{ localStorage.setItem(BARBER_SESSION_STORAGE_KEY, String(Date.now())); }catch(e){}
+}
+
+// Se true, o painel pode reabrir direto (sem pedir o PIN de novo) assim que
+// o Firebase confirmar que a sessão Google do barbeiro ainda está válida —
+// é o que faz "atualizar a página" não jogar o barbeiro pra tela de PIN
+// toda vez, contanto que ele já tenha confirmado o PIN há pouco tempo neste
+// mesmo aparelho.
+export function isBarberSessionUnlocked(){
+  try{
+    var raw = localStorage.getItem(BARBER_SESSION_STORAGE_KEY);
+    if(!raw) return false;
+    var ts = parseInt(raw, 10);
+    return !isNaN(ts) && (Date.now() - ts) < BARBER_SESSION_PERSIST_MS;
+  }catch(e){ return false; }
+}
+
 // ---------- BARBER AUTH ----------
 
 // Desloga de verdade (encerra a sessão Google) pra forçar reautenticação
-// completa no próximo acesso, e não só o PIN de conveniência — consistente
-// com o resto do app, que nunca restaura sessão de barbeiro sozinho.
+// completa no próximo acesso, e não só o PIN de conveniência — por isso
+// também limpa a marca de "PIN lembrado" (BARBER_SESSION_STORAGE_KEY), senão
+// o próximo onAuthStateChanged ainda tentaria reabrir o painel sozinho.
 export async function doBarberLogout(){
   stopApptsListener();
   try{ await signOut(auth); }catch(e){}
+  try{ localStorage.removeItem(BARBER_SESSION_STORAGE_KEY); }catch(e){}
   state.barberLoggedIn = false;
   state.barberTab = "hoje";
   state.barberBugOpen = false;
@@ -174,6 +197,7 @@ export function renderBarberAuth(el){
         state.barberLoggedIn = true;
         state.screen = "barberApp";
         state.barberLastActivity = Date.now();
+        touchBarberSession();
         render();
         startApptsListener();
         refreshClients().then(render);
