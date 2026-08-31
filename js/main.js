@@ -52,3 +52,12 @@ async function init(){
   }, 30000);
 }
 init();
+
+// Registra o service worker (PWA — permite "Instalar app"/"Adicionar à
+// Tela de Início" e dá uma resiliência básica offline; ver sw.js). Falha
+// em silêncio em navegadores sem suporte, sem afetar o resto do app.
+if("serviceWorker" in navigator){
+  window.addEventListener("load", function(){
+    navigator.serviceWorker.register("./sw.js").catch(function(){});
+  });
+}
