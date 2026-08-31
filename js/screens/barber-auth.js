@@ -48,7 +48,6 @@ export async function doBarberLogout(){
   state.barberLoggedIn = false;
   state.barberTab = "hoje";
   state.barberBugOpen = false;
-  state.barberLastActivity = null;
   state.screen = "landing";
   render();
 }
@@ -196,7 +195,6 @@ export function renderBarberAuth(el){
       if(matched){
         state.barberLoggedIn = true;
         state.screen = "barberApp";
-        state.barberLastActivity = Date.now();
         touchBarberSession();
         render();
         startApptsListener();

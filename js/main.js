@@ -2,7 +2,7 @@ import { BARBER_EMAIL } from "./constants.js";
 import { loadData, refreshClients, refreshClientOwnAppts, startApptsListener } from "./data.js";
 import { auth, db, doc, getDoc, onAuthStateChanged } from "./firebase.js";
 import { render } from "./render.js";
-import { doBarberLogout, isBarberSessionUnlocked, touchBarberSession } from "./screens/barber-auth.js";
+import { isBarberSessionUnlocked, touchBarberSession } from "./screens/barber-auth.js";
 import { state } from "./state.js";
 
 async function init(){
@@ -28,7 +28,6 @@ async function init(){
       if(isBarberSessionUnlocked()){
         state.barberLoggedIn = true;
         state.screen = "barberApp";
-        state.barberLastActivity = Date.now();
         touchBarberSession();
         render();
         startApptsListener();
@@ -52,26 +51,18 @@ async function init(){
 
   render();
 
-  // Desloga o painel do barbeiro sozinho depois de um tempo sem nenhum
-  // clique/tecla — útil se o aparelho ficar esquecido aberto num balcão.
-  var BARBER_INACTIVITY_LIMIT_MS = 30 * 60 * 1000; // 30 minutos
+  // Enquanto o painel estiver aberto, cada clique/tecla renova o prazo do
+  // "PIN lembrado" neste aparelho (ver touchBarberSession/
+  // BARBER_SESSION_PERSIST_MS em barber-auth.js/constants.js) — assim um
+  // dia inteiro de uso contínuo nunca esbarra nesse prazo. Não existe mais
+  // nenhum logout automático por inatividade: o painel só desloga quando o
+  // barbeiro clica em "Sair", ou depois de BARBER_SESSION_PERSIST_MS sem
+  // abrir o app nenhuma vez.
   ["click", "keydown"].forEach(function(evt){
     document.addEventListener(evt, function(){
-      if(state.screen === "barberApp"){
-        state.barberLastActivity = Date.now();
-        touchBarberSession(); // renova o prazo do "PIN lembrado" neste aparelho
-      }
+      if(state.screen === "barberApp") touchBarberSession();
     });
   });
-
-  // Agendamentos novos já chegam em tempo real via startApptsListener() (ver
-  // acima). Este intervalo agora só cuida do logout por inatividade.
-  setInterval(async function(){
-    if(state.screen !== "barberApp") return;
-    if(state.barberLastActivity && (Date.now() - state.barberLastActivity) > BARBER_INACTIVITY_LIMIT_MS){
-      await doBarberLogout();
-    }
-  }, 30000);
 }
 init();
 

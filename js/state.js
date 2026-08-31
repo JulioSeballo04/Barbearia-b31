@@ -27,7 +27,6 @@ export var state = {
   barberClientSearch: "",
   barberBugOpen: false,      // se o formulário de reportar problema está expandido, no painel do barbeiro
   barberTab: "hoje",         // hoje | calendario | clientes | ajustes — abas do painel do barbeiro
-  barberLastActivity: null,  // timestamp do último clique/tecla no painel, pra deslogar por inatividade
   showPrivacyModal: false,   // modal da política de privacidade, acessível de qualquer tela
   showDeleteAccountModal: false, // modal de confirmação de "excluir meus dados", só na tela do cliente
   deletingAccount: false     // true enquanto a exclusão está em andamento (evita cliques duplicados)
