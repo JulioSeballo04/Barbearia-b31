@@ -59,7 +59,7 @@ export var MAX_ACTIVE_APPTS_PER_CLIENT = 3;
 // barbeiro pra acessar o painel. Precisa ser IDÊNTICO ao valor usado na
 // função isBarberSession() de firestore.rules — são as duas metades da
 // mesma trava. Sem essa troca, ninguém consegue logar como barbeiro.
-export var BARBER_EMAIL = "seballojuliocesar@gmail.com";
+export var BARBER_EMAIL = "jeffersonbarletta80@gmail.com";
 
 // Official B31 badge artwork (cropped from the shop's real logo image),
 // embedded as a compressed data URI so the page stays a single file.
