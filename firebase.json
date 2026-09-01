@@ -3,8 +3,17 @@
     "public": ".",
     "ignore": [
       "firebase.json",
+      "firestore.rules",
+      ".firebaserc",
+      ".git/**",
+      ".gitignore",
       "**/.*",
-      "**/node_modules/**"
+      "**/node_modules/**",
+      "novachave.json",
+      "*serviceAccount*.json",
+      "limpar-dados-demo.js",
+      "dados-demo-manifest.json",
+      "README*.md"
     ]
   },
   "firestore": {
